@@ -35,6 +35,9 @@ services:
     networks:
       - leantime-net
     volumes:
+      # Mount your custom code (overlays the container's code)
+      - /home/yb/leantime-sb:/var/www/html
+      # Keep these as named volumes for persistence
       - public_userfiles:/var/www/html/public/userfiles     # Volume to store public files, logo etc
       - userfiles:/var/www/html/userfiles                   # Original volume name for compatibility
       - plugins:/var/www/html/app/Plugins                   # Plugin storage

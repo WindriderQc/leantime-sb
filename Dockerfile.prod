@@ -1,4 +1,19 @@
 FROM leantime/leantime:latest
 
-# Overlay your fork's code
-COPY . /var/www/html
+# Copy custom code
+COPY --chown=www-data:www-data . /var/www/html
+
+# Install Composer (official image doesn't include it by default)
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+
+# Install PHP dependencies
+RUN cd /var/www/html && composer install --no-dev --optimize-autoloader --no-interaction
+
+# Install Node.js dependencies and build assets
+RUN cd /var/www/html && npm ci && npm run production
+
+# Clean up build dependencies to reduce image size
+RUN rm -rf /var/www/html/node_modules /root/.composer /root/.npm
+
+# Set proper permissions
+RUN chown -R www-data:www-data /var/www/html
