@@ -402,16 +402,26 @@ leantime.calendarController = (function () {
             calendar.render();
 
             calendar.scrollToTime(Date.now());
+            
+            // Update calendar title and week display initially
+            updateCalendarTitle();
+            updateWeekDisplay();
 
             jQuery('.minCalendar .fc-prev-button').click(function () {
                 calendar.prev();
-                calendar.getCurrentData()
+                calendar.getCurrentData();
+                updateCalendarTitle();
+                updateWeekDisplay();
             });
             jQuery('.minCalendar .fc-next-button').click(function () {
                 calendar.next();
+                updateCalendarTitle();
+                updateWeekDisplay();
             });
             jQuery('.minCalendar .fc-today-button').click(function () {
                 calendar.today();
+                updateCalendarTitle();
+                updateWeekDisplay();
             });
             jQuery(".minCalendar .calendarViewSelect").on("click", function (e) {
 
@@ -424,6 +434,8 @@ leantime.calendarController = (function () {
                 } else {
                     jQuery('.day-selector').hide();
                 }
+                updateCalendarTitle();
+                updateWeekDisplay();
 
                 jQuery.ajax({
                     type: 'PATCH',
@@ -444,7 +456,56 @@ leantime.calendarController = (function () {
                 // Update active state
                 jQuery('.day-button').removeClass('active');
                 jQuery(this).addClass('active');
+                
+                updateCalendarTitle();
             });
+        }
+        
+        function updateCalendarTitle() {
+            if (jQuery("#dashboardCalendarTitle").length > 0) {
+                jQuery("#dashboardCalendarTitle").text(calendar.getCurrentData().viewTitle);
+            }
+        }
+        
+        function updateWeekDisplay() {
+            // Get the current date from calendar
+            const currentDate = calendar.getDate();
+            const luxonDate = luxon.DateTime.fromJSDate(currentDate);
+            
+            // Get start of week based on user's locale
+            const startOfWeek = luxonDate.startOf('week');
+            
+            // Update day buttons
+            const daySelector = jQuery('.minCalendar .day-selector');
+            if (daySelector.length > 0) {
+                daySelector.empty();
+                
+                // Generate 7 days starting from start of week
+                for (let i = 0; i < 7; i++) {
+                    const day = startOfWeek.plus({ days: i });
+                    const dateStr = day.toFormat('yyyy-MM-dd');
+                    const dayName = day.toFormat('EEE');
+                    const dayNum = day.toFormat('dd');
+                    const isToday = day.hasSame(luxon.DateTime.local(), 'day');
+                    const isCurrent = day.hasSame(luxonDate, 'day');
+                    
+                    const button = jQuery('<button>')
+                        .addClass('day-button tw-rounded-md tw-w-12 tw-h-12 tw-flex tw-flex-col tw-items-center tw-justify-center tw-text-sm')
+                        .attr('data-date', dateStr)
+                        .toggleClass('today', isToday)
+                        .toggleClass('active', isCurrent)
+                        .html('<span class="tw-text-xs">' + dayName + '</span><span class="tw-font-medium">' + dayNum + '</span>')
+                        .on('click', function() {
+                            const clickedDate = jQuery(this).data('date');
+                            calendar.gotoDate(clickedDate);
+                            jQuery('.day-button').removeClass('active');
+                            jQuery(this).addClass('active');
+                            updateCalendarTitle();
+                        });
+                    
+                    daySelector.append(button);
+                }
+            }
         }
 
         htmx.onLoad(function (content) {

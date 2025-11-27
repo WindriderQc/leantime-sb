@@ -32,8 +32,20 @@
 
 <div class="tw-h-full minCalendar">
     <div class="clear"></div>
+    <!-- Month Navigation Header - placed outside fc-toolbar -->
+    <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 0; margin-bottom: 10px;">
+        <button class="fc-prev-button btn btn-default" type="button" title="{{ __('language.prevText') }}" style="padding: 5px 10px; cursor: pointer;">
+            <i class="fa fa-chevron-left"></i>
+        </button>
+        <div style="font-weight: 600; font-size: 16px; flex-grow: 1; text-align: center;" id="dashboardCalendarTitle">
+            <!-- Month/Year will be displayed here -->
+        </div>
+        <button class="fc-next-button btn btn-default" type="button" title="{{ __('language.nextText') }}" style="padding: 5px 10px; cursor: pointer;">
+            <i class="fa fa-chevron-right"></i>
+        </button>
+    </div>
     <div class="fc-toolbar tw-z-10">
-        <div class="fc-left tw-flex">
+        <div class="fc-left tw-flex tw-flex-col tw-gap-2">
             <div class="day-selector tw-w-full tw-flex tw-gap-2 tw-mb-4 tw-justify-between"
                  @php
                      $currentView = $tpl->getToggleState("dashboardCalendarView") ?: 'timeGridDay';
