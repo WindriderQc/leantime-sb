@@ -1,4 +1,4 @@
-FROM leantime/leantime@sha256:11d71363a43ebe458041ab08d93034e526a5ac77c241ce0bf77922a66d2f69a3
+FROM leantime/leantime:latest
 
 # Overlay your fork's code
 COPY . /var/www/html
