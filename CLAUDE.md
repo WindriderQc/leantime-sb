@@ -2,49 +2,120 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## About Leantime
+## About This Project
 
-Leantime is an open source project management system designed for non-project managers. It combines strategy, planning, and execution in an easy-to-use interface. The application is built with PHP, MySQL, and a modern JS frontend.
+This is a **customized Leantime fork** (WindriderQc/leantime-sb) based on the official Leantime open source project management system. It includes custom enhancements for improved calendar navigation, workflow optimization, and development efficiency.
+
+**Upstream Project:** Leantime is designed for non-project managers, combining strategy, planning, and execution in an easy-to-use interface. Built with PHP, MySQL, and modern JavaScript frontend.
+
+**Repository:** WindriderQc/leantime-sb (branch: custom-prod)
 
 ## Development Environment Setup
 
-### Requirements
-- PHP 8.2+
-- MySQL 8.0+ or MariaDB 10.6+
-- Required PHP extensions: BC Math, Ctype, cURL, DOM, Exif, Fileinfo, Filter, GD, Hash, LDAP, Multibyte String, MySQL, OPcache, OpenSSL, PCNTL, PCRE, PDO, Phar, Session, Tokenizer, Zip, SimpleXML
+### Hybrid Docker + Local Development Approach (RECOMMENDED)
 
-### Local Development with Docker (Recommended)
+This project uses a **hybrid approach** combining the official Docker image with selective file syncing for rapid iteration:
+
+#### Why This Approach?
+- ✅ Official Docker image includes all PHP extensions and dependencies
+- ✅ No need to install PHP/Composer/MySQL locally
+- ✅ Changes visible immediately after sync (no container rebuild)
+- ✅ Frontend assets built locally with npm/webpack
+- ❌ Volume mounting entire codebase fails (missing vendor/)
+
+#### Quick Start
 ```bash
-# First build the development environment
-make clean build
+# 1. Ensure Docker + Docker Compose installed
+docker --version
+docker compose version
 
-# Start the development server
-make run-dev
+# 2. Start production container (from /opt/leantime/)
+cd /opt/leantime
+docker compose up -d
+
+# 3. Navigate to development directory
+cd ~/leantime-sb
+
+# 4. Install frontend dependencies
+npm install
+
+# 5. Build frontend assets
+npm run production  # or: npm run dev
+
+# 6. Sync changes to container
+./sync-to-container.sh
 ```
 
-This starts a development server on port 8090 with:
-- Leantime app: http://localhost:8090
-- MailDev (for email testing): http://localhost:8081
-- phpMyAdmin: http://localhost:8082 (auth: leantime/leantime)
-- S3Ninja (for S3 testing): http://localhost:8083
+#### Development Workflow
+```bash
+# Make changes to files in ~/leantime-sb/
 
-### Manual Local Development
+# Build frontend assets
+npm run dev  # Development build with source maps
+# or
+npm run production  # Production build (optimized)
+
+# Sync changes to running container
+./sync-to-container.sh [optional-specific-file]
+
+# View changes in browser (no container restart needed)
+# Open: http://localhost:8890
+```
+
+### Requirements
+- Docker & Docker Compose
+- Node.js 16+ & npm (for frontend asset compilation)
+- Git (for version control)
+
+**Backend Requirements (handled by Docker):**
+- PHP 8.2+
+- MySQL 8.0+ or MariaDB 10.6+
+- PHP extensions: BC Math, Ctype, cURL, DOM, Exif, Fileinfo, Filter, GD, Hash, LDAP, Multibyte String, MySQL, OPcache, OpenSSL, PCNTL, PCRE, PDO, Phar, Session, Tokenizer, Zip, SimpleXML
+
+### Alternative: Full Local Development
 ```bash
 # Install dependencies
-make install-deps-dev
+composer install --no-dev
+npm install
 
 # Build for development
-make build-dev
+npm run dev
 
 # Point your web server to the public/ directory
 # Create MySQL database
-# Copy config/.env.sample to config/.env and configure your database
+# Copy config/.env.sample to config/.env and configure database
 # Navigate to <localdomain>/install
 ```
 
 ## Common Commands
 
-### Build Commands
+### Development Workflow Commands (Hybrid Approach)
+
+```bash
+# Frontend asset compilation (run in ~/leantime-sb/)
+npm run dev              # Development build with source maps
+npm run production       # Production build (minified, optimized)
+npm run watch            # Watch mode (auto-rebuild on changes)
+
+# Sync changes to container (run in ~/leantime-sb/)
+./sync-to-container.sh                    # Sync all configured files
+./sync-to-container.sh app/Domain/...    # Sync specific file
+
+# Container management (run in /opt/leantime/)
+docker compose up -d            # Start container
+docker compose down             # Stop container
+docker compose restart          # Restart container
+docker compose logs -f          # View logs
+docker compose ps               # Check status
+
+# Access container shell
+docker exec -it leantime bash
+
+# View container logs
+docker logs leantime -f
+```
+
+### Build Commands (Traditional/Upstream)
 ```bash
 # Install development dependencies
 make install-deps-dev
@@ -66,37 +137,36 @@ make package
 
 # Build js/css using webpack (run in root or within a plugin)
 npx mix
-
 ```
 
-### Testing Commands
+### Testing Commands (Run inside container)
 ```bash
-# Run static analysis
-make phpstan
+# Access container shell first
+docker exec -it leantime bash
 
-# Run code style checks
-make test-code-style
-
-# Fix code style issues
-make fix-code-style
+# Then run tests
+php vendor/bin/phpstan analyze
+php vendor/bin/phpcs --standard=PSR12 app/
 
 # Run unit tests
-make unit-test
+php vendor/bin/codecept run Unit
 
 # Run acceptance tests
-make acceptance-test
+php vendor/bin/codecept run Acceptance
 
-# Run specific acceptance test groups
-# For API tests:
-docker compose --file .dev/docker-compose.yaml --file .dev/docker-compose.tests.yaml exec leantime-dev php vendor/bin/codecept run -g api --steps
-
-# For timesheet tests:
-docker compose --file .dev/docker-compose.yaml --file .dev/docker-compose.tests.yaml exec leantime-dev php vendor/bin/codecept run -g timesheet --steps
+# Run specific test groups
+php vendor/bin/codecept run -g api --steps
+php vendor/bin/codecept run -g timesheet --steps
 ```
 
-### CLI Commands
-Leantime extended the standard Laravel artisan command and includes several command-line tools located in the `app/Command` directory that can be executed via:
+### CLI Commands (Run inside container)
+Leantime extends Laravel's artisan command and includes several CLI tools located in `app/Command/`:
+
 ```bash
+# Access container shell
+docker exec -it leantime bash
+
+# Run commands
 php bin/leantime [command]
 ```
 
@@ -108,6 +178,8 @@ Common commands:
 - `plugin:list` - List all installed plugins
 - `user:add` - Add a new user
 - `setting:save [key] [value]` - Save a system setting
+- `backup:db` - Backup database
+- `migrate` - Run database migrations
 
 ## Code Architecture
 
@@ -550,3 +622,136 @@ We have a DateTimeHelper class to parse commone datetime formats we find, the da
 - Services can call repositories
 - Be careful when calling domain services in other domain services as circular references can happen
 - Services should validated input and throw exceptions when validation fails
+
+---
+
+## Custom Fork Enhancements (WindriderQc/leantime-sb)
+
+This section documents custom modifications specific to this fork.
+
+### Hybrid Development Workflow
+
+**Problem Solved:** Official Docker image works but doesn't support easy development iteration.
+
+**Solution:** Selective file syncing via `sync-to-container.sh`
+
+**Key Files:**
+- `sync-to-container.sh` - Sync script for rapid iteration
+- `Dockerfile.prod` - Production build configuration
+- `DEPLOYMENT.md` - Complete workflow documentation
+
+**Workflow:**
+1. Edit files in `~/leantime-sb/`
+2. Build frontend assets: `npm run dev`
+3. Sync to container: `./sync-to-container.sh`
+4. View changes immediately (no rebuild)
+
+### Custom Calendar Enhancements
+
+**Location:** `app/Domain/Calendar/`
+
+**Modified Files:**
+- `Templates/partials/calendar.blade.php` - Enhanced navigation controls
+- `Js/calendarController.js` - Improved navigation logic
+
+**Changes:**
+- Fixed previous/next month navigation
+- Improved button responsiveness
+- Better UX for month/week/day switching
+
+**Testing:**
+- Navigate to `/calendar` in browser
+- Test month navigation buttons
+- Verify date range updates correctly
+
+### Development Best Practices for This Fork
+
+**When Editing Backend (PHP):**
+1. Edit in `~/leantime-sb/app/`
+2. Run `./sync-to-container.sh` to sync changes
+3. No need to restart container for code changes
+4. Restart container only for config/environment changes
+
+**When Editing Frontend (JS/CSS):**
+1. Edit in `~/leantime-sb/public/assets/js/` or `~/leantime-sb/app/Domain/*/Js/`
+2. Build assets: `npm run dev` (or `npm run watch`)
+3. Run `./sync-to-container.sh` to sync built assets
+4. Refresh browser to see changes
+
+**When Editing Templates (Blade):**
+1. Edit `.blade.php` files in `~/leantime-sb/app/Domain/*/Templates/`
+2. Run `./sync-to-container.sh`
+3. Refresh browser (Blade cache auto-clears in dev mode)
+
+**Troubleshooting:**
+- Changes not visible? Check `docker logs leantime -f` for errors
+- Sync failed? Ensure container is running: `docker ps`
+- Assets not updating? Clear browser cache and rebuild: `npm run dev`
+- Permission errors? Check file ownership in container
+
+### File Locations Reference
+
+**Critical Custom Files:**
+```
+~/leantime-sb/
+├── sync-to-container.sh              # Sync script
+├── DEPLOYMENT.md                     # Full deployment guide
+├── CLAUDE.md                         # This file
+├── app/Domain/Calendar/
+│   ├── Js/calendarController.js     # Custom calendar JS
+│   └── Templates/partials/
+│       └── calendar.blade.php        # Custom calendar widget
+└── public/assets/js/
+    └── compiled/                     # Built assets (synced)
+
+/opt/leantime/
+├── docker-compose.yml                # Production container config
+└── .env                              # Production environment vars
+```
+
+### Repository Management
+
+**Branches:**
+- `custom-prod` - Main custom branch (current)
+- Keep fork up-to-date with upstream: `git pull upstream main`
+
+**Commit Guidelines:**
+- Prefix custom changes: `[CUSTOM]` in commit messages
+- Document breaking changes in DEPLOYMENT.md
+- Test sync script after structural changes
+
+### Security Considerations
+
+**API Keys & Secrets:**
+- Never commit `.env` files
+- Keep container `.env` separate from repo
+- Document required environment variables in `config/sample.env`
+
+**File Permissions:**
+- Container runs as `www-data` (UID 33)
+- Synced files inherit container permissions
+- Use `docker exec -it leantime chown -R www-data:www-data /var/www/html/` if needed
+
+### Performance Optimization
+
+**Asset Compilation:**
+- Development: `npm run dev` (source maps, unminified)
+- Production: `npm run production` (minified, optimized)
+- Watch mode: `npm run watch` (auto-rebuild)
+
+**Caching:**
+- Laravel cache: File-based by default
+- Consider Redis for production (configure in `.env`)
+- Clear cache: `docker exec -it leantime php bin/leantime cache:clear`
+
+### Planned Enhancements
+
+Features being considered for implementation (see todo list):
+
+1. **Security Improvements** - XSS prevention, input sanitization
+2. **Pomodoro Timer** - Productivity feature integration
+3. **CI/CD Pipeline** - Automated deployment workflows
+4. **Enhanced Calendar UX** - Additional calendar improvements
+5. **Modal Management** - Better modal handling patterns
+
+See individual feature branches for implementation details.
