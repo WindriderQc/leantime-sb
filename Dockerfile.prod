@@ -1,19 +1,34 @@
-FROM leantime/leantime:latest
+FROM leantime/leantime:latest AS php-deps
 
-# Copy custom code
-COPY --chown=www-data:www-data . /var/www/html
+USER root
+WORKDIR /var/www/html
 
-# Install Composer (official image doesn't include it by default)
+RUN apk add --no-cache git
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
-# Install PHP dependencies
-RUN cd /var/www/html && composer install --no-dev --optimize-autoloader --no-interaction
+COPY --chown=www-data:www-data . /var/www/html
 
-# Install Node.js dependencies and build assets
-RUN cd /var/www/html && npm ci && npm run production
+RUN composer install --no-dev --optimize-autoloader --no-interaction
 
-# Clean up build dependencies to reduce image size
-RUN rm -rf /var/www/html/node_modules /root/.composer /root/.npm
+FROM node:20-alpine AS asset-build
 
-# Set proper permissions
-RUN chown -R www-data:www-data /var/www/html
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . /app
+
+RUN npx mix --production && node generateBlocklist.mjs
+
+FROM leantime/leantime:latest
+
+USER root
+WORKDIR /var/www/html
+
+COPY --chown=www-data:www-data . /var/www/html
+COPY --from=php-deps --chown=www-data:www-data /var/www/html/vendor /var/www/html/vendor
+COPY --from=asset-build --chown=www-data:www-data /app/public/dist /var/www/html/public/dist
+COPY --from=asset-build --chown=www-data:www-data /app/blocklist.json /var/www/html/blocklist.json
+
+USER www-data
