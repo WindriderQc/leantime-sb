@@ -132,3 +132,7 @@ config/.env
 /.serena
 /.playwright-mcp
 /.idea
+/code_search_index/
+tests/Httprequests/http-client.private.env.json
+.claude/docs/personal-companion-requirements.md
+.claude/docs/git-workflow.md

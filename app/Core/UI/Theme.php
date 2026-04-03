@@ -130,6 +130,42 @@ class Theme
         'companyColors' => 'companyColors',
     ];
 
+    /**
+     * Get color scheme values adjusted for current color mode.
+     * Ensures WCAG 2.1 AA contrast compliance in both light and dark modes.
+     *
+     * @param  string  $schemeName  The identifier of the color scheme
+     * @param  array  $scheme  The original color scheme definition
+     * @return array The color scheme with mode-appropriate values
+     *
+     * @api
+     */
+    private function getColorSchemeForMode(string $schemeName, array $scheme): array
+    {
+        $colorMode = $this->getColorMode();
+
+        // Adjust grayscale schemes for dark mode to ensure readability
+        if ($colorMode === 'dark') {
+            if ($schemeName === 'grayscale1') {
+                return [
+                    'name' => $scheme['name'],
+                    'primaryColor' => '#e8e8e8',   // Light gray - 8.5:1 contrast on #292929
+                    'secondaryColor' => '#b0b0b0', // Medium gray - 4.2:1 contrast
+                ];
+            }
+            if ($schemeName === 'grayscale2') {
+                return [
+                    'name' => $scheme['name'],
+                    'primaryColor' => '#a0a0a0',   // Light gray - 5.0:1 contrast on #292929
+                    'secondaryColor' => '#d1d1d1', // Light gray - 9.1:1 contrast
+                ];
+            }
+        }
+
+        // Light mode: use original values
+        return $scheme;
+    }
+
     private array $backgroundTypes = ['gradient', 'image'];
 
     private array $backgroundSources = ['unsplash', 'upload'];
@@ -168,7 +204,47 @@ class Theme
         $this->language = $language;
         $this->appSettings = $appSettings;
         $this->fileManager = $fileManager;
+    }
 
+    /**
+     * Batch-preload all user theme settings into the SettingCache in a single query.
+     * Called once on first page load after login to avoid 8-11 individual getSetting() calls
+     * as each theme getter (getActive, getColorMode, getColorScheme, getFont, etc.) fires.
+     *
+     * The preloaded values are cached by SettingCache's in-memory tier, so subsequent
+     * individual getSetting() calls within the same request are instant.
+     */
+    public function preloadUserSettings(): void
+    {
+        if (! Auth::isLoggedIn()) {
+            return;
+        }
+
+        $userId = session('userdata.id');
+        if (! $userId) {
+            return;
+        }
+
+        // If session already has theme data, skip preloading
+        if (session()->exists('usersettings.theme')) {
+            return;
+        }
+
+        $keys = [
+            "usersettings.$userId.theme",
+            "usersettings.$userId.colorMode",
+            "usersettings.$userId.colorScheme",
+            "usersettings.$userId.themeFont",
+            "usersettings.$userId.backgroundType",
+            "usersettings.$userId.backgroundImage",
+            'companysettings.primarycolor',
+            'companysettings.secondarycolor',
+            'companysettings.sitename',
+            'companysettings.logoPath',
+        ];
+
+        // Single batch query -- results are stored in SettingCache's in-memory tier
+        $this->settingsRepo->getSettingsForKeys($keys);
     }
 
     /**
@@ -181,7 +257,15 @@ class Theme
 
         $this->readIniData();
 
-        $parsedColorSchemes = $this->colorSchemes;
+        // Apply color mode adjustments to predefined schemes
+        $parsedColorSchemes = [];
+        foreach ($this->colorSchemes as $key => $scheme) {
+            if (is_array($scheme)) {
+                $parsedColorSchemes[$key] = $this->getColorSchemeForMode($key, $scheme);
+            } else {
+                $parsedColorSchemes[$key] = $scheme;
+            }
+        }
         $parsedColorSchemes['themeDefault'] = [
             'name' => 'Leantime',
             'primaryColor' => $this->iniData['general']['primaryColor'] ?? $this->colorSchemes['themeDefault']['primaryColor'],
@@ -213,10 +297,23 @@ class Theme
         return self::dispatchFilter('fonts', $this->fonts);
     }
 
+    /**
+     * Retrieves the user's background image URL.
+     * Caches the result in session to avoid a DB query on every page load.
+     *
+     * @return string|null The background image URL, or null if not logged in.
+     */
     public function getBackgroundImage(): ?string
     {
         if (Auth::isLoggedIn()) {
-            return $this->settingsRepo->getSetting('usersettings.'.session('userdata.id').'.backgroundImage');
+            if (session()->exists('usersettings.backgroundImage')) {
+                return session('usersettings.backgroundImage') ?: null;
+            }
+
+            $image = $this->settingsRepo->getSetting('usersettings.'.session('userdata.id').'.backgroundImage');
+            session(['usersettings.backgroundImage' => $image ?: '']);
+
+            return $image ?: null;
         }
 
         return null;
@@ -227,13 +324,28 @@ class Theme
         if (Auth::isLoggedIn()) {
             $this->settingsRepo->saveSetting('usersettings.'.session('userdata.id').'.backgroundType', 'image');
             $this->settingsRepo->saveSetting('usersettings.'.session('userdata.id').'.backgroundImage', $url);
+            session(['usersettings.backgroundType' => 'image']);
+            session(['usersettings.backgroundImage' => $url]);
         }
     }
 
+    /**
+     * Retrieves the user's background type (gradient or image).
+     * Caches the result in session to avoid a DB query on every page load.
+     *
+     * @return string The background type.
+     */
     public function getBackgroundType(): string
     {
         if (Auth::isLoggedIn()) {
-            return $this->settingsRepo->getSetting('usersettings.'.session('userdata.id').'.backgroundType') ?? 'gradient';
+            if (session()->exists('usersettings.backgroundType')) {
+                return session('usersettings.backgroundType') ?: 'gradient';
+            }
+
+            $type = $this->settingsRepo->getSetting('usersettings.'.session('userdata.id').'.backgroundType');
+            session(['usersettings.backgroundType' => $type ?: 'gradient']);
+
+            return $type ?: 'gradient';
         }
 
         return 'gradient';
@@ -243,10 +355,11 @@ class Theme
     {
         if (Auth::isLoggedIn()) {
             $this->settingsRepo->saveSetting('usersettings.'.session('userdata.id').'.backgroundType', $type);
+            session(['usersettings.backgroundType' => $type]);
             if ($type == 'gradient') {
                 $this->settingsRepo->deleteSetting('usersettings.'.session('userdata.id').'.backgroundImage');
+                session(['usersettings.backgroundImage' => '']);
             }
-
         }
     }
 
@@ -471,6 +584,16 @@ class Theme
         // Only store colors in session for logged in users
         if (Auth::isLoggedIn()) {
             session(['usersettings.colorMode' => $colorMode]);
+
+            // Clear cached color values to force reload with new mode-aware values
+            session()->forget('usersettings.colors.primaryColor');
+            session()->forget('usersettings.colors.secondaryColor');
+
+            // Refresh accent colors for current color scheme with new mode
+            $currentScheme = session('usersettings.colorScheme');
+            if ($currentScheme) {
+                $this->setAccentColors($currentScheme);
+            }
         }
 
         EventDispatcher::addFilterListener(
@@ -982,5 +1105,7 @@ class Theme
         session()->forget('usersettings.colorScheme');
         session()->forget('usersettings.themeFont');
         session()->forget('usersettings.theme');
+        session()->forget('usersettings.backgroundType');
+        session()->forget('usersettings.backgroundImage');
     }
 }

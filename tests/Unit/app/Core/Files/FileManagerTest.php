@@ -2,6 +2,7 @@
 
 namespace Tests\Unit\app\Core\Files;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Filesystem\FilesystemManager;
@@ -10,6 +11,8 @@ use Illuminate\Support\Facades\Log;
 use Leantime\Core\Configuration\Environment;
 use Leantime\Core\Files\Exceptions\FileValidationException;
 use Leantime\Core\Files\FileManager;
+use Leantime\Core\Language;
+use Leantime\Core\Support\CarbonMacros;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Symfony\Component\HttpFoundation\Response;
 use Unit\TestCase;
@@ -27,6 +30,33 @@ class FileManagerTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // Set up session values needed for DateTimeHelper (used by dtHelper())
+        session(['usersettings.timezone' => 'UTC']);
+        session(['usersettings.language' => 'en-US']);
+        session(['usersettings.date_format' => 'Y-m-d']);
+        session(['usersettings.time_format' => 'H:i']);
+
+        // Mock Environment and bind to container for dtHelper()
+        $envMock = $this->createMock(Environment::class);
+        $envMock->defaultTimezone = 'UTC';
+        $envMock->language = 'en-US';
+        app()->instance(Environment::class, $envMock);
+
+        // Mock Language and bind to container
+        $langMock = $this->createMock(Language::class);
+        $langMock->method('__')->willReturnCallback(function ($index) {
+            $map = [
+                'language.dateformat' => 'Y-m-d',
+                'language.timeformat' => 'H:i',
+            ];
+
+            return $map[$index] ?? $index;
+        });
+        app()->instance(Language::class, $langMock);
+
+        // Register CarbonMacros for date parsing
+        CarbonImmutable::mixin(new CarbonMacros('UTC', 'en-US', 'Y-m-d', 'H:i'));
 
         // Mock the FilesystemManager
         $this->filesystemManager = $this->createMock(FilesystemManager::class);
@@ -139,23 +169,26 @@ class FileManagerTest extends TestCase
 
     public function test_get_file_successfully()
     {
-        // Create a mock response
-        $mockResponse = $this->createMock(Response::class);
-
         // Setup filesystem manager to return our mocked storage
         $this->filesystemManager->method('getDefaultDriver')->willReturn('local');
         $this->filesystemManager->method('disk')->with('local')->willReturn($this->storage);
-        $this->storage->method('mimeType')->willReturn('text/plain');
 
-        // Setup storage to successfully find and download the file
+        // Setup storage to successfully find and read the file
         $this->storage->expects($this->once())->method('exists')->willReturn(true);
-        $this->storage->method('download')->willReturn($mockResponse);
+        $this->storage->method('mimeType')->willReturn('text/plain');
+        $this->storage->method('get')->willReturn('file content');
+        $this->storage->method('size')->willReturn(12);
+        $this->storage->method('lastModified')->willReturn(1700000000);
 
         // Execute the method under test
         $result = $this->fileManager->getFile('test.txt', 'original-name.txt');
 
-        // Assert the result is the expected response
-        $this->assertSame($mockResponse, $result);
+        // Assert the result is a Response with correct headers
+        $this->assertInstanceOf(Response::class, $result);
+        $this->assertEquals('file content', $result->getContent());
+        $this->assertEquals('text/plain', $result->headers->get('Content-Type'));
+        $this->assertEquals('12', $result->headers->get('Content-Length'));
+        $this->assertStringContainsString('original-name.txt', $result->headers->get('Content-Disposition'));
     }
 
     public function test_get_file_not_found()

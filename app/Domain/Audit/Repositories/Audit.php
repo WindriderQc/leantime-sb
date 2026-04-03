@@ -2,40 +2,43 @@
 
 namespace Leantime\Domain\Audit\Repositories;
 
+use Carbon\CarbonImmutable;
+use Illuminate\Database\ConnectionInterface;
 use Leantime\Core\Db\Db as DbCore;
-use PDO;
 
 class Audit
 {
-    private DbCore $db;
+    private ConnectionInterface $db;
 
     public function __construct(DbCore $db)
     {
-        $this->db = $db;
+        $this->db = $db->getConnection();
     }
 
+    /**
+     * Store an audit event in the database.
+     *
+     * @param  string  $action  The action that occurred (e.g. 'article.create', 'article.edit')
+     * @param  string  $values  JSON-encoded values associated with the event
+     * @param  string  $entity  The entity type (e.g. 'article')
+     * @param  int  $entityId  The ID of the entity
+     * @param  int  $userId  The ID of the user who performed the action
+     * @param  int  $projectId  The project context
+     * @param  string  $thedate  Optional date override; defaults to now
+     */
     public function storeEvent(string $action = 'ping', string $values = '', string $entity = '', int $entityId = 0, int $userId = 0, int $projectId = 0, string $thedate = ''): void
     {
+        $eventDate = $thedate === '' ? now() : $thedate;
 
-        if ($thedate == '') {
-            $thedate2 = date('Y-m-d H:i:s');
-        } else {
-            $thedate2 = $thedate;
-        }
-
-        $sql = 'INSERT INTO zp_audit (`userId`,`projectId`,`action`,`entity`,`entityId`,`values`,`date`) VALUES (:userId,:projectId,:action,:entity,:entityId,:values,:thedate)';
-
-        $stmn = $this->db->database->prepare($sql);
-        $stmn->bindValue(':userId', $userId, PDO::PARAM_INT);
-        $stmn->bindValue(':projectId', $projectId, PDO::PARAM_INT);
-        $stmn->bindValue(':action', $action);
-        $stmn->bindValue(':entity', $entity);
-        $stmn->bindValue(':entityId', $entityId, PDO::PARAM_INT);
-        $stmn->bindValue(':values', $values);
-        $stmn->bindValue(':thedate', $thedate2);
-
-        $stmn->execute();
-        $stmn->closeCursor();
+        $this->db->table('zp_audit')->insert([
+            'userId' => $userId,
+            'projectId' => $projectId,
+            'action' => $action,
+            'entity' => $entity,
+            'entityId' => $entityId,
+            'values' => $values,
+            'date' => $eventDate,
+        ]);
     }
 
     /**
@@ -43,39 +46,61 @@ class Audit
      */
     public function getLastEvent(string $action = ''): mixed
     {
-        $sql = 'SELECT * FROM zp_audit';
+        $query = $this->db->table('zp_audit');
 
-        if ($action != '') {
-            $sql .= ' WHERE `action` = :action';
-        }
-        $sql .= ' ORDER BY `date` DESC LIMIT 1';
-
-        $stmn = $this->db->database->prepare($sql);
-
-        if ($action != '') {
-            $stmn->bindValue(':action', $action);
+        if ($action !== '') {
+            $query->where('action', $action);
         }
 
-        $stmn->execute();
+        $result = $query->orderBy('date', 'desc')
+            ->limit(1)
+            ->first();
 
-        $values = $stmn->fetchAll();
-        $stmn->closeCursor();
+        return $result ? (array) $result : null;
+    }
 
-        if (isset($values[0])) {
-            return $values[0];
-        }
-
-        return null;
+    /**
+     * Get audit events for a specific entity, joined with user info.
+     *
+     * Uses explicit column list to avoid id collision between zp_audit and zp_user.
+     *
+     * @param  string  $entity  The entity type to filter by
+     * @param  int  $entityId  The entity ID to filter by
+     * @param  int  $limit  Maximum number of events to return
+     * @return array<int, array<string, mixed>>
+     */
+    public function getEventsForEntity(string $entity, int $entityId, int $limit = 20): array
+    {
+        return $this->db->table('zp_audit')
+            ->select(
+                'zp_audit.id',
+                'zp_audit.action',
+                'zp_audit.date',
+                'zp_audit.entity',
+                'zp_audit.entityId',
+                'zp_audit.projectId',
+                'zp_audit.userId',
+                'zp_audit.values',
+                'zp_user.firstname',
+                'zp_user.lastname',
+                'zp_user.profileId'
+            )
+            ->leftJoin('zp_user', 'zp_audit.userId', '=', 'zp_user.id')
+            ->where('entity', $entity)
+            ->where('entityId', $entityId)
+            ->orderBy('date', 'desc')
+            ->limit($limit)
+            ->get()
+            ->map(fn ($item) => (array) $item)
+            ->toArray();
     }
 
     public function pruneEvents(int $ageDays = 30): void
     {
-        $sql = 'DELETE FROM zp_audit WHERE DATE(`date`) < CURDATE() - INTERVAL :age DAY';
+        $cutoffDate = CarbonImmutable::now()->subDays($ageDays)->startOfDay();
 
-        $stmn = $this->db->database->prepare($sql);
-        $stmn->bindValue(':age', $ageDays, PDO::PARAM_INT);
-
-        $stmn->execute();
-        $stmn->closeCursor();
+        $this->db->table('zp_audit')
+            ->whereDate('date', '<', $cutoffDate)
+            ->delete();
     }
 }

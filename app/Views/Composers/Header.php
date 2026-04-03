@@ -36,6 +36,11 @@ class Header extends Composer
 
     public function with(): array
     {
+        // Batch-preload all theme settings in a single query on first load.
+        // This populates SettingCache's in-memory tier so all subsequent
+        // getSetting() calls from getActive(), getColorMode(), etc. are instant.
+        $this->themeCore->preloadUserSettings();
+
         $theme = $this->themeCore->getActive();
         $colorMode = $this->themeCore->getColorMode();
         $colorScheme = $this->themeCore->getColorScheme();
@@ -80,6 +85,8 @@ class Header extends Composer
             'accents' => [
                 $this->themeCore->getPrimaryColor(),
                 $this->themeCore->getSecondaryColor(),
+                false,  // accent3 uses CSS default
+                false,  // accent4 uses CSS default
             ],
             'themeBg' => $this->themeCore->getBackgroundImage(),
             'themeOpacity' => $backgroundOpacity,

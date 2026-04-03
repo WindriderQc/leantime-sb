@@ -1,0 +1,6 @@
+services:
+  leantime:
+    build:
+      context: /home/yb/leantime-sb
+      dockerfile: Dockerfile.prod
+    image: leantime-custom:local

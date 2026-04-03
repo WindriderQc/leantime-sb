@@ -8,7 +8,7 @@
             class='active'
         @endif
     >
-        <a href="{{ BASE_URL . $menuItem['href'] }}"
+        <a href="{{ str_starts_with($menuItem['href'], 'http://') || str_starts_with($menuItem['href'], 'https://') ? $menuItem['href'] : BASE_URL . $menuItem['href'] }}"
            data-tippy-content="{{ strip_tags(__($menuItem['tooltip'])) }}"
            data-tippy-placement="right"
            preload="mouseover"

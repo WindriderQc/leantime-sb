@@ -97,6 +97,7 @@ class Menu
             7 => ['type' => 'item', 'module' => 'projects', 'title' => 'menu.sidemenu_my_project_hub', 'icon' => 'fa fa-solid fa-house-flag', 'tooltip' => 'menu.projecthub_tooltip', 'href' => '/projects/showMy', 'active' => ['showMy'], 'role' => 'editor'],
             15 => ['type' => 'item', 'module' => 'timesheets', 'title' => 'menu.sidemenu_my_timesheets', 'icon' => 'fa-clock', 'tooltip' => 'menu.my_timesheets_tooltip', 'href' => '/timesheets/showMy', 'active' => ['showMy']],
             20 => ['type' => 'item', 'module' => 'calendar', 'title' => 'menu.sidemenu_my_calendar', 'icon' => 'fa fa-calendar', 'tooltip' => 'menu.my_calendar_tooltip', 'href' => '/calendar/showMyCalendar', 'active' => ['showMyCalendar']],
+            25 => ['type' => 'item', 'module' => 'whiteboard', 'title' => '<i class="fa fa-chalkboard"></i> Whiteboard', 'icon' => 'fa fa-chalkboard', 'tooltip' => 'Collaborative drawing whiteboard', 'href' => 'https://specialblend.ca/Projects/DrawTogether/', 'attributes' => ['target' => '_blank', 'rel' => 'noopener noreferrer']],
         ],
         'projecthub' => [
             10 => ['type' => 'item', 'module' => 'projects', 'title' => 'menu.sidemenu_my_project_hub', 'icon' => 'fa-solid fa-house-flag', 'tooltip' => 'menu.my_projects_tooltip', 'href' => '/projects/showMy', 'active' => ['showMy']],
@@ -398,8 +399,24 @@ class Menu
         return $url;
     }
 
+    /**
+     * Request-level cache for getSectionMenuType results.
+     * Prevents redundant computation when called from multiple composers (App, Menu, HeadMenu).
+     * Keyed by route+default since different callers may pass different defaults.
+     *
+     * @var array<string, string>
+     */
+    private static array $sectionMenuTypeCache = [];
+
     public function getSectionMenuType($currentRoute, $default = 'default')
     {
+        // Cache key includes both route and default since the result depends on both.
+        // Different composers may pass different defaults for routes not in the sections map.
+        $cacheKey = $currentRoute.'|'.$default;
+        if (isset(self::$sectionMenuTypeCache[$cacheKey])) {
+            return self::$sectionMenuTypeCache[$cacheKey];
+        }
+
         $sections = [
             'dashboard.home' => 'personal',
             'projects.showMy' => 'personal',
@@ -430,10 +447,10 @@ class Menu
 
         $sections = self::dispatch_filter('menuSections', $sections, ['currentRoute' => $currentRoute, 'default' => $default]);
 
-        if (isset($sections[$currentRoute])) {
-            return $sections[$currentRoute];
-        } else {
-            return $default;
-        }
+        $result = $sections[$currentRoute] ?? $default;
+
+        self::$sectionMenuTypeCache[$cacheKey] = $result;
+
+        return $result;
     }
 }

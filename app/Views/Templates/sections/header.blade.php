@@ -3,7 +3,7 @@
 <meta name="requestId" content="{{ \Illuminate\Support\Str::random(4) }}">
 <meta name="description" content="{{ $sitename }}">
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-touch-fullscreen" content="yes">
 <meta name="theme-color" content="{{ $primaryColor }}">
@@ -19,6 +19,10 @@
 
 <link rel="stylesheet" href="{!! BASE_URL !!}/dist/css/main.{!! $version !!}.min.css"/>
 <link rel="stylesheet" href="{!! BASE_URL !!}/dist/css/app.{!! $version !!}.min.css"/>
+@if($tpl->needsComponent('tiptap'))
+<link rel="stylesheet" href="{!! BASE_URL !!}/dist/css/tiptap-editor.{!! $version !!}.min.css"/>
+<link rel="stylesheet" href="{!! BASE_URL !!}/dist/css/katex.min.css"/>
+@endif
 
 @dispatchEvent('afterLinkTags')
 
@@ -31,11 +35,22 @@
 <script src="{!! BASE_URL !!}/dist/js/compiled-frameworks.{!! $version !!}.min.js"></script>
 <script src="{!! BASE_URL !!}/dist/js/compiled-framework-plugins.{!! $version !!}.min.js"></script>
 <script src="{!! BASE_URL !!}/dist/js/compiled-global-component.{!! $version !!}.min.js"></script>
+@if($tpl->needsComponent('calendar'))
 <script src="{!! BASE_URL !!}/dist/js/compiled-calendar-component.{!! $version !!}.min.js"></script>
+@endif
+@if($tpl->needsComponent('table'))
 <script src="{!! BASE_URL !!}/dist/js/compiled-table-component.{!! $version !!}.min.js"></script>
-<script src="{!! BASE_URL !!}/dist/js/compiled-editor-component.{!! $version !!}.min.js"></script>
+@endif
+@if($tpl->needsComponent('tiptap'))
+<script src="{!! BASE_URL !!}/dist/js/compiled-tiptap-toolbar.{!! $version !!}.min.js"></script>
+<script src="{!! BASE_URL !!}/dist/js/compiled-tiptap-editor.{!! $version !!}.min.js"></script>
+@endif
+@if($tpl->needsComponent('gantt'))
 <script src="{!! BASE_URL !!}/dist/js/compiled-gantt-component.{!! $version !!}.min.js"></script>
+@endif
+@if($tpl->needsComponent('chart'))
 <script src="{!! BASE_URL !!}/dist/js/compiled-chart-component.{!! $version !!}.min.js"></script>
+@endif
 
 @dispatchEvent('afterScriptLibTags')
 

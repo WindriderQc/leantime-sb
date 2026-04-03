@@ -62,6 +62,8 @@ $tpl->dispatchTplEvent('filters.beforeLefthandSectionClose');
                     <form action="" method="post">
                         <input type="text" name="headline" autofocus placeholder="<?php echo $tpl->__('input.placeholders.create_task'); ?>" style="width: 100%;"/>
                         <input type="hidden" name="sprint" value="<?= $currentSprint?>" />
+                        <input type="hidden" name="milestone" value="<?= htmlspecialchars((string) ($searchCriteria['milestone'] ?? ''), ENT_QUOTES, 'UTF-8') ?>" />
+                        <input type="hidden" name="groupBy" value="<?= htmlspecialchars((string) ($searchCriteria['groupBy'] ?? ''), ENT_QUOTES, 'UTF-8') ?>" />
                         <input type="hidden" name="quickadd" value="1"/>
                         <input type="submit" class="btn btn-primary tw-mb-m" value="<?php echo $tpl->__('buttons.save'); ?>" name="saveTicket" style="vertical-align: top; "/>
                     </form>
@@ -69,7 +71,7 @@ $tpl->dispatchTplEvent('filters.beforeLefthandSectionClose');
 
                     <?php foreach ($allTicketGroups as $group) {?>
                         <?php if ($group['label'] != 'all') { ?>
-                            <h5 class="accordionTitle <?= $group['class']?>" id="accordion_link_<?= $group['id'] ?>">
+                            <h5 class="accordionTitle <?= $group['class']?>" <?php if (! empty($group['color'])) { ?>style="color:<?= htmlspecialchars($group['color']) ?>"<?php } ?> id="accordion_link_<?= $group['id'] ?>">
                                 <a href="javascript:void(0)" class="accordion-toggle" id="accordion_toggle_<?= $group['id'] ?>" onclick="leantime.snippets.accordionToggle('<?= $group['id'] ?>');">
                                     <i class="fa fa-angle-down"></i><?= $group['label'] ?> (<?= count($group['items']) ?>)
                                 </a>

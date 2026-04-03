@@ -32,9 +32,6 @@ class Comments
     /**
      * @api
      */
-    /**
-     * @api
-     */
     public function getComments($module, $entityId, int $commentOrder = 0, int $parent = 0): false|array
     {
         return $this->commentRepository->getComments($module, $entityId, $parent, $commentOrder);
@@ -93,6 +90,7 @@ class Comments
 
                 $notification->entity = $mapper;
                 $notification->module = 'comments';
+                $notification->action = 'commented';
                 $notification->projectId = session('currentProject');
                 $notification->subject = $subject;
                 $notification->authorId = session('userdata.id');

@@ -5,7 +5,7 @@
     @dispatchEvent('insideHeadMenu')
 
     @include('timesheets::partials.stopwatch', [
-               'progressSteps' => $onTheClock
+               'onTheClock' => $onTheClock
            ])
 
     @if ($login::userIsAtLeast("manager", true))

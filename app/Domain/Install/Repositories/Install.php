@@ -5,12 +5,15 @@ namespace Leantime\Domain\Install\Repositories;
 use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Database\DatabaseManager;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Leantime\Core\Configuration\AppSettings as AppSettingCore;
 use Leantime\Core\Configuration\Environment;
 use Leantime\Core\Events\DispatchesEvents;
+use Leantime\Domain\Install\Services\SchemaBuilder;
 use Leantime\Domain\Menu\Repositories\Menu as MenuRepository;
 use Leantime\Domain\Setting\Repositories\Setting;
 use Leantime\Domain\Setting\Services\SettingCache;
@@ -72,7 +75,12 @@ class Install
         30400,
         30408,
         30409,
-        30410
+        30410,
+        30411,
+        30412,
+        30413,
+        30500,
+        30501,
     ];
 
     /**
@@ -101,8 +109,11 @@ class Install
         $this->dbManager = $dbManager;
 
         // Use Laravel's database connection for consistency with the rest of the application
+        // Detect the configured database driver (defaults to 'mysql')
+        $defaultConnection = config('database.default', 'mysql');
+
         try {
-            $this->connection = $this->dbManager->connection('mysql');
+            $this->connection = $this->dbManager->connection($defaultConnection);
         } catch (\Exception $e) {
             Log::error('Failed to establish database connection during installation: '.$e->getMessage());
             // During installation, we may need to create a temporary connection without database selection
@@ -121,24 +132,46 @@ class Install
     /**
      * Create a temporary database connection for installation purposes
      * This is used when the main database connection fails during installation
+     * Supports both MySQL and PostgreSQL
      */
     private function createTemporaryConnection(): void
     {
         try {
-            // Create a temporary connection without selecting a specific database
-            $config = [
-                'driver' => 'mysql',
-                'host' => $this->config->dbHost,
-                'port' => $this->config->dbPort ?? 3306,
-                'username' => $this->config->dbUser,
-                'password' => $this->config->dbPassword,
-                'charset' => 'utf8mb4',
-                'collation' => 'utf8mb4_unicode_ci',
-                'options' => [
-                    PDO::MYSQL_ATTR_INIT_COMMAND => 'SET NAMES utf8mb4,sql_mode="NO_ENGINE_SUBSTITUTION"',
-                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                ],
-            ];
+            $driver = config('database.default', 'mysql');
+
+            if ($driver === 'pgsql') {
+                // PostgreSQL temporary connection
+                $config = [
+                    'driver' => 'pgsql',
+                    'host' => $this->config->dbHost,
+                    'port' => $this->config->dbPort ?? 5432,
+                    'database' => 'postgres', // Connect to default postgres database
+                    'username' => $this->config->dbUser,
+                    'password' => $this->config->dbPassword,
+                    'charset' => 'utf8',
+                    'prefix' => '',
+                    'search_path' => 'public',
+                    'sslmode' => env('LEAN_DB_SSLMODE', 'prefer'),
+                    'options' => [
+                        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    ],
+                ];
+            } else {
+                // MySQL temporary connection (default)
+                $config = [
+                    'driver' => 'mysql',
+                    'host' => $this->config->dbHost,
+                    'port' => $this->config->dbPort ?? 3306,
+                    'username' => $this->config->dbUser,
+                    'password' => $this->config->dbPassword,
+                    'charset' => 'utf8mb4',
+                    'collation' => 'utf8mb4_unicode_ci',
+                    'options' => [
+                        PDO::MYSQL_ATTR_INIT_COMMAND => 'SET NAMES utf8mb4,sql_mode="NO_ENGINE_SUBSTITUTION"',
+                        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                    ],
+                ];
+            }
 
             // Use Laravel's DB manager to create a temporary connection
             config(['database.connections.install_temp' => $config]);
@@ -161,8 +194,8 @@ class Install
 
         try {
 
-            // Use Laravel's database connection
-            $this->connection->statement('USE `'.$this->config->dbDatabase.'`');
+            // Select the database - MySQL uses USE, PostgreSQL uses search_path
+            $this->selectDatabase($this->config->dbDatabase);
 
             $count = $this->connection->table('zp_user')->count();
 
@@ -180,45 +213,47 @@ class Install
     }
 
     /**
-     * setupDB installs database
+     * Select/switch to a specific database
+     * Handles database-specific syntax for MySQL vs PostgreSQL
+     */
+    private function selectDatabase(string $database): void
+    {
+        $driver = $this->connection->getDriverName();
+
+        if ($driver === 'pgsql') {
+            // PostgreSQL: reconnect with the correct database
+            // Since we can't "USE" a database in PostgreSQL like MySQL,
+            // the database is specified at connection time
+            $this->connection->getPdo()->exec('SET search_path TO public');
+        } else {
+            // MySQL: USE statement
+            $this->connection->statement('USE `'.$database.'`');
+        }
+    }
+
+    /**
+     * setupDB installs database using database-agnostic Schema Builder
      *
      * @param  array  $values  Form values for admin user and company information
      * @param  string  $db
      */
     public function setupDB(array $values, $db = ''): bool
     {
-
-        $sql = $this->sqlPrep();
-
         try {
-            // Use Laravel's database connection
+            // Select the database
             $dbName = $db ?: $this->config->dbDatabase;
-            $this->connection->statement('USE `'.$dbName.'`');
+            $this->selectDatabase($dbName);
 
             $pwReset = Str::random(32);
             session()->put('pwReset', $pwReset);
 
-            // Use PDO for multi-statement SQL with parameter binding
-            // We need to use PDO directly because Laravel's statement() method
-            // may not handle multi-statement SQL properly
-            $pdo = $this->connection->getPdo();
-            $stmn = $pdo->prepare($sql);
-
-            $stmn->bindValue(':email', $values['email'], PDO::PARAM_STR);
-            $stmn->bindValue(':firstname', $values['firstname'], PDO::PARAM_STR);
-            $stmn->bindValue(':lastname', $values['lastname'], PDO::PARAM_STR);
-            $stmn->bindValue(':dbVersion', $this->settings->dbVersion, PDO::PARAM_STR);
-            $stmn->bindValue(':company', $values['company'], PDO::PARAM_STR);
-            $stmn->bindValue(':pwReset', $pwReset, PDO::PARAM_STR);
-
-            $stmn->execute();
-
-            /** @noinspection PhpStatementHasEmptyBodyInspection */
-            while ($stmn->nextRowset()) {/* https://bugs.php.net/bug.php?id=61613 */
-            }
+            // Use SchemaBuilder for database-agnostic table creation
+            $schemaBuilder = app()->make(SchemaBuilder::class);
+            $schemaBuilder->createAllTables();
+            $schemaBuilder->insertInitialData($values, $pwReset);
 
             return true;
-        } catch (PDOException $e) {
+        } catch (\Exception $e) {
             Log::error($e);
 
             return false;
@@ -240,7 +275,7 @@ class Install
 
         $errors = [];
 
-        $this->connection->statement('USE `'.$this->config->dbDatabase.'`');
+        $this->selectDatabase($this->config->dbDatabase);
 
         $versionArray = explode('.', $this->settings->dbVersion);
         if (is_array($versionArray) && count($versionArray) == 3) {
@@ -293,7 +328,7 @@ class Install
                     try {
 
                         $settingsService = app()->make(\Leantime\Domain\Setting\Services\Setting::class);
-                        $settingsService->saveSetting('db-version', $this->settings->dbVersion);
+                        $settingsService->saveSetting('db-version', $this->convert_version($updateVersion));
 
                         // $stmn = $this->database->prepare("INSERT INTO zp_settings (`key`, `value`) VALUES ('db-version', '".$this->settings->dbVersion."') ON DUPLICATE KEY UPDATE `value` = '".$this->settings->dbVersion."'");
                         // $stmn->execute();
@@ -317,6 +352,18 @@ class Install
         session()->forget('dbVersion');
 
         return true;
+    }
+
+    private function convert_version($inputVersion): string
+    {
+        // $inputVersion is in the format of 10000 and needs to be converted to 1.0.0
+        $versionString = str_pad((string) $inputVersion, 5, '0', STR_PAD_LEFT);
+
+        $major = intval(substr($versionString, 0, -4));
+        $minor = intval(substr($versionString, -4, 2));
+        $patch = intval(substr($versionString, -2));
+
+        return $major.'.'.$minor.'.'.$patch;
     }
 
     /**
@@ -346,6 +393,7 @@ class Install
                     `projectId` INT NULL,
                     `type` VARCHAR(45) NULL,
                     `description` TEXT,
+                    `color` VARCHAR(50) DEFAULT 'ocean',
                     `modified` datetime DEFAULT NULL,
                     PRIMARY KEY (`id`),
                     KEY `ProjectIdType` (`projectId` ASC, `type` ASC),
@@ -647,7 +695,7 @@ class Install
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
                 INSERT INTO `zp_user`(`id`,`username`,`firstname`,`lastname`,`phone`,`profileId`,`lastlogin`,`lastpwd_change`,`status`,`expires`,`role`,`session`,`sessiontime`,`wage`,`hours`,`description`,`clientId`, `notifications`, `createdOn`, `pwReset`)
-                VALUES (1,:email,:firstname,:lastname,'','',NULL,0,'i',NULL,'50','','',0,0,NULL,0,1, NOW(), :pwReset);
+                VALUES (1,:email,:firstname,:lastname,'','',NULL,0,'i',NULL,'50','','',0,0,NULL,0,1, :createdOn, :pwReset);
 
                 CREATE TABLE `zp_sprints` (
                     `id` INT NOT NULL AUTO_INCREMENT,
@@ -1613,8 +1661,8 @@ class Install
                 ADD COLUMN `action` TEXT NULL DEFAULT NULL AFTER `probability`,
                 ADD COLUMN `assignedTo` INT NULL DEFAULT NULL AFTER `action`;',
             "UPDATE zp_canvas_items SET
-                    currentValue = CAST(IF(`data` = '', 0, `data`) AS DECIMAL(10,2)),
-                    endValue = CAST(IF(`conclusion` = '', 0, `conclusion`) AS DECIMAL(10,2)),
+                    currentValue = CAST(CASE WHEN `data` = '' THEN 0 ELSE `data` END AS DECIMAL(10,2)),
+                    endValue = CAST(CASE WHEN `conclusion` = '' THEN 0 ELSE `conclusion` END AS DECIMAL(10,2)),
                     title = description,
                     description = assumptions
                     WHERE box = 'goal';",
@@ -1947,7 +1995,7 @@ class Install
                     `weekDays` TEXT NULL,
                     `monthDay` INT NULL,
                     `months` TEXT NULL,
-                    `action` VARCHAR(20) NOT NULL DEFAULT "reset",
+                    `action` VARCHAR(20) NOT NULL DEFAULT \'reset\',
                     `lastProcessed` DATETIME NULL,
                     `nextProcessingDate` DATETIME NULL,
                     `enabled` TINYINT(1) NOT NULL DEFAULT 1,
@@ -2081,30 +2129,372 @@ class Install
         return count($errors) ? $errors : true;
     }
 
+    /**
+     * Migration 30410: Ensure zp_entity_relationship table exists with correct schema
+     *
+     * This migration must handle all possible database states from different upgrade paths:
+     * - State A: Only plural table (zp_entity_relationships) exists with typo column (enitityA)
+     * - State B: Only singular table (zp_entity_relationship) exists with correct column (entityA)
+     * - State C: Only singular table exists with typo column (enitityA)
+     * - State D: Both tables exist (from failed previous migrations)
+     * - State E: Neither table exists (fresh install edge case)
+     *
+     * @return bool Always returns true to prevent blocking subsequent migrations
+     */
     public function update_sql_30410(): bool|array
     {
+        $pluralTable = 'zp_entity_relationships';
+        $singularTable = 'zp_entity_relationship';
+
+        try {
+            $pluralExists = $this->tableExistsForMigration($pluralTable);
+            $singularExists = $this->tableExistsForMigration($singularTable);
+
+            // Case D: Both tables exist - merge data from plural into singular, then drop plural
+            if ($pluralExists && $singularExists) {
+                $this->mergeEntityRelationshipTables($pluralTable, $singularTable);
+            }
+            // Case A: Only plural exists - rename to singular
+            elseif ($pluralExists && ! $singularExists) {
+                $this->connection->statement("RENAME TABLE `{$pluralTable}` TO `{$singularTable}`");
+            }
+            // Case E: Neither exists - create singular with correct schema
+            elseif (! $pluralExists && ! $singularExists) {
+                $this->createEntityRelationshipTable();
+
+                return true;
+            }
+            // Case B/C: Only singular exists - continue to fix column/index if needed
+
+            // Fix column typo if present (handles Case A after rename, Case C, Case D after merge)
+            $this->fixEntityAColumnTypo($singularTable);
+
+            // Ensure correct index exists
+            $this->ensureEntityAIndex($singularTable);
+
+        } catch (\Exception $e) {
+            Log::error('Migration 30410: '.$e->getMessage());
+            // Don't fail the migration - log and continue
+        }
+
+        return true;
+    }
+
+    /**
+     * Check if a table exists in the current database
+     */
+    private function tableExistsForMigration(string $tableName): bool
+    {
+        $result = $this->connection->select(
+            'SELECT COUNT(*) as cnt FROM information_schema.tables
+             WHERE table_schema = DATABASE() AND table_name = ?',
+            [$tableName]
+        );
+
+        return $result[0]->cnt > 0;
+    }
+
+    /**
+     * Check if a column exists in a table
+     */
+    private function columnExistsForMigration(string $tableName, string $columnName): bool
+    {
+        $result = $this->connection->select(
+            'SELECT COUNT(*) as cnt FROM information_schema.columns
+             WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',
+            [$tableName, $columnName]
+        );
+
+        return $result[0]->cnt > 0;
+    }
+
+    /**
+     * Check if an index exists on a table
+     */
+    private function indexExistsForMigration(string $tableName, string $indexName): bool
+    {
+        $result = $this->connection->select(
+            'SELECT COUNT(*) as cnt FROM information_schema.statistics
+             WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+            [$tableName, $indexName]
+        );
+
+        return $result[0]->cnt > 0;
+    }
+
+    /**
+     * Merge data from plural table into singular table, then drop plural
+     */
+    private function mergeEntityRelationshipTables(string $sourceTable, string $targetTable): void
+    {
+        try {
+            // Determine column names in source table (may have typo)
+            $sourceHasTypo = $this->columnExistsForMigration($sourceTable, 'enitityA');
+            $sourceEntityAColumn = $sourceHasTypo ? 'enitityA' : 'entityA';
+
+            // Determine column names in target table (may have typo)
+            $targetHasTypo = $this->columnExistsForMigration($targetTable, 'enitityA');
+            $targetEntityAColumn = $targetHasTypo ? 'enitityA' : 'entityA';
+
+            // Insert data from source into target, ignoring duplicates
+            $this->connection->statement("
+                INSERT IGNORE INTO `{$targetTable}` (
+                    `{$targetEntityAColumn}`, `entityAType`, `entityB`, `entityBType`,
+                    `relationship`, `createdOn`, `createdBy`, `meta`
+                )
+                SELECT
+                    `{$sourceEntityAColumn}`, `entityAType`, `entityB`, `entityBType`,
+                    `relationship`, `createdOn`, `createdBy`, `meta`
+                FROM `{$sourceTable}`
+            ");
+
+            // Drop the source (plural) table
+            $this->connection->statement("DROP TABLE `{$sourceTable}`");
+
+        } catch (\Exception $e) {
+            Log::error('Migration 30410: Failed to merge tables: '.$e->getMessage());
+        }
+    }
+
+    /**
+     * Create the entity_relationship table with correct schema
+     */
+    private function createEntityRelationshipTable(): void
+    {
+        $this->connection->statement('
+            CREATE TABLE `zp_entity_relationship` (
+                `id` INT NOT NULL AUTO_INCREMENT,
+                `entityA` INT NULL,
+                `entityAType` VARCHAR(45) NULL,
+                `entityB` INT NULL,
+                `entityBType` VARCHAR(45) NULL,
+                `relationship` VARCHAR(45) NULL,
+                `createdOn` DATETIME NULL,
+                `createdBy` INT NULL,
+                `meta` TEXT NULL,
+                PRIMARY KEY (`id`),
+                INDEX `entityA` (`entityA` ASC, `entityAType` ASC, `relationship` ASC),
+                INDEX `entityB` (`entityB` ASC, `entityBType` ASC, `relationship` ASC)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        ');
+    }
+
+    /**
+     * Fix the entityA column typo if it exists
+     */
+    private function fixEntityAColumnTypo(string $tableName): void
+    {
+        try {
+            if ($this->columnExistsForMigration($tableName, 'enitityA')) {
+                $this->connection->statement(
+                    "ALTER TABLE `{$tableName}` CHANGE COLUMN `enitityA` `entityA` INT NULL"
+                );
+            }
+        } catch (\Exception $e) {
+            Log::error("Migration 30410: Failed to fix column typo in {$tableName}: ".$e->getMessage());
+        }
+    }
+
+    /**
+     * Ensure the entityA index exists with correct columns
+     */
+    private function ensureEntityAIndex(string $tableName): void
+    {
+        try {
+            // Drop the old index if it exists (it may reference the wrong column)
+            if ($this->indexExistsForMigration($tableName, 'entityA')) {
+                $this->connection->statement("ALTER TABLE `{$tableName}` DROP INDEX `entityA`");
+            }
+
+            // Create the index with correct columns
+            $this->connection->statement(
+                "ALTER TABLE `{$tableName}` ADD INDEX `entityA` (`entityA` ASC, `entityAType` ASC, `relationship` ASC)"
+            );
+        } catch (\Exception $e) {
+            Log::error("Migration 30410: Failed to ensure entityA index on {$tableName}: ".$e->getMessage());
+        }
+    }
+
+    public function update_sql_30411(): bool|array
+    {
         $errors = [];
-    
+
         $sql = [
-            // Rename the column `enitityA` to `entityA`
-            "ALTER TABLE `zp_entity_relationship` CHANGE COLUMN `enitityA` `entityA` INT NULL;",
-    
-            // Drop the old index on `enitityA`
-            "ALTER TABLE `zp_entity_relationship` DROP INDEX `entityA`;",
-    
-            // Create a new index on `entityA`
-            "ALTER TABLE `zp_entity_relationship` ADD INDEX `entityA` (`entityA` ASC, `entityAType` ASC, `relationship` ASC);"
+            // Add color column to zp_canvas for notebook color support
+            'ALTER TABLE `zp_canvas` ADD COLUMN `color` VARCHAR(50) DEFAULT \'ocean\' AFTER `description`;',
         ];
-    
+
         foreach ($sql as $statement) {
             try {
                 $this->connection->statement($statement);
             } catch (\Exception $e) {
-                Log::error($statement . ' Failed: ' . $e->getMessage());
+                Log::error($statement.' Failed: '.$e->getMessage());
                 Log::error($e);
+                // Don't fail for duplicate column
+                if (! str_contains($e->getMessage(), 'Duplicate column name')) {
+                    array_push($errors, $statement.' Failed: '.$e->getMessage());
+                }
             }
         }
-    
+
+        return count($errors) ? $errors : true;
+    }
+
+    /**
+     * Migration 30412: Safety net for zp_entity_relationship table
+     *
+     * This migration acts as a final safety net for users who may have had issues
+     * with migration 30410. It performs the same checks and fixes using the shared
+     * helper methods to ensure the table is in the correct state.
+     *
+     * Since 30410 is now robust and idempotent, this migration will typically
+     * find everything already correct and simply return true.
+     *
+     * @return bool Always returns true to prevent blocking subsequent migrations
+     */
+    public function update_sql_30412(): bool|array
+    {
+        $pluralTable = 'zp_entity_relationships';
+        $singularTable = 'zp_entity_relationship';
+
+        try {
+            $pluralExists = $this->tableExistsForMigration($pluralTable);
+            $singularExists = $this->tableExistsForMigration($singularTable);
+
+            // Handle any remaining plural table issues
+            if ($pluralExists && $singularExists) {
+                $this->mergeEntityRelationshipTables($pluralTable, $singularTable);
+            } elseif ($pluralExists && ! $singularExists) {
+                $this->connection->statement("RENAME TABLE `{$pluralTable}` TO `{$singularTable}`");
+            } elseif (! $pluralExists && ! $singularExists) {
+                $this->createEntityRelationshipTable();
+
+                return true;
+            }
+
+            // Ensure column and index are correct
+            $this->fixEntityAColumnTypo($singularTable);
+            $this->ensureEntityAIndex($singularTable);
+
+        } catch (\Exception $e) {
+            Log::error('Migration 30412: '.$e->getMessage());
+        }
+
+        return true;
+    }
+
+    /**
+     * Migration 30413: Final fix for zp_entity_relationship table
+     *
+     * This migration ensures all users get the entity_relationship table fix,
+     * including those whose DB version was already recorded as 30412+ due to
+     * previous failed or partial migrations.
+     *
+     * Since all the helper methods are idempotent, this will simply verify
+     * the table is correct (doing nothing if already fixed) or apply the fix
+     * if still needed.
+     *
+     * @return bool Always returns true to prevent blocking subsequent migrations
+     */
+    public function update_sql_30413(): bool|array
+    {
+        $pluralTable = 'zp_entity_relationships';
+        $singularTable = 'zp_entity_relationship';
+
+        try {
+            $pluralExists = $this->tableExistsForMigration($pluralTable);
+            $singularExists = $this->tableExistsForMigration($singularTable);
+
+            // Handle any remaining plural table issues
+            if ($pluralExists && $singularExists) {
+                $this->mergeEntityRelationshipTables($pluralTable, $singularTable);
+            } elseif ($pluralExists && ! $singularExists) {
+                $this->connection->statement("RENAME TABLE `{$pluralTable}` TO `{$singularTable}`");
+            } elseif (! $pluralExists && ! $singularExists) {
+                $this->createEntityRelationshipTable();
+
+                return true;
+            }
+
+            // Ensure column and index are correct
+            $this->fixEntityAColumnTypo($singularTable);
+            $this->ensureEntityAIndex($singularTable);
+
+        } catch (\Exception $e) {
+            Log::error('Migration 30413: '.$e->getMessage());
+        }
+
+        return true;
+    }
+
+    /**
+     * Add performance indexes for frequently-queried columns.
+     *
+     * - zp_tickets.dependingTicketId: Used in every subtask query (was full table scan)
+     * - zp_tickethistory.ticketId: Used in ticket history lookups
+     * - zp_read (userId, module, moduleId): Table had zero indexes
+     * - zp_relationuserproject (userId, projectId): Used in auth checks
+     * - zp_comment (moduleId, module, date): Used in "latest comment" queries
+     */
+    public function update_sql_30500(): bool|array
+    {
+        $indexes = [
+            ['table' => 'zp_tickets', 'columns' => ['dependingTicketId'], 'name' => 'idx_tickets_dependingTicketId'],
+            ['table' => 'zp_tickethistory', 'columns' => ['ticketId'], 'name' => 'idx_tickethistory_ticketId'],
+            ['table' => 'zp_read', 'columns' => ['userId', 'module', 'moduleId'], 'name' => 'idx_read_userId_module_moduleId'],
+            ['table' => 'zp_relationuserproject', 'columns' => ['userId', 'projectId'], 'name' => 'idx_relationuserproject_userId_projectId'],
+            ['table' => 'zp_comment', 'columns' => ['moduleId', 'module', 'date'], 'name' => 'idx_comment_moduleId_module_date'],
+        ];
+
+        foreach ($indexes as $index) {
+            try {
+                if (! Schema::hasTable($index['table'])) {
+                    continue;
+                }
+
+                // Check if index already exists before adding
+                $existingIndexes = collect(
+                    $this->connection->select("SHOW INDEX FROM `{$index['table']}`")
+                )->pluck('Key_name')->unique()->toArray();
+
+                if (! in_array($index['name'], $existingIndexes)) {
+                    Schema::table($index['table'], function (Blueprint $table) use ($index) {
+                        $table->index($index['columns'], $index['name']);
+                    });
+                }
+            } catch (\Exception $e) {
+                Log::error("Migration 30500: Failed to add index {$index['name']} on {$index['table']}: ".$e->getMessage());
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Migration 30501: Ensure zp_canvas.color column exists
+     *
+     * Migration 30411 added this column but could fail silently on MySQL servers
+     * with ANSI_QUOTES sql_mode due to DEFAULT "ocean" using double quotes
+     * (interpreted as identifier, not string literal). The SQL was fixed in #3284
+     * but users who already ran the broken migration have the DB version advanced
+     * past 30411 without the column actually existing.
+     *
+     * @return bool|array Returns true on success, array of errors on failure
+     */
+    public function update_sql_30501(): bool|array
+    {
+        try {
+            if (Schema::hasTable('zp_canvas') && ! Schema::hasColumn('zp_canvas', 'color')) {
+                Schema::table('zp_canvas', function (Blueprint $table) {
+                    $table->string('color', 50)->nullable()->default('ocean')->after('description');
+                });
+            }
+        } catch (\Exception $e) {
+            Log::error('Migration 30501: '.$e->getMessage());
+
+            return ['Migration 30501 failed: '.$e->getMessage()];
+        }
+
         return true;
     }
 }

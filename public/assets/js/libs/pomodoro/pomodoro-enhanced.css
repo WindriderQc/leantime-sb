@@ -1,0 +1,215 @@
+/* Pomodoro Timer Widget Styles */
+
+.pomodoro-widget {
+    background: var(--main-background-color, #ffffff);
+    border: 1px solid var(--main-border-color, #e0e0e0);
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    text-align: center;
+    max-width: 400px;
+    margin: 0 auto;
+}
+
+.pomodoro-mode-display {
+    margin-bottom: 15px;
+}
+
+.mode-label {
+    font-size: 1.2em;
+    font-weight: 600;
+    color: var(--main-text-color, #333);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.pomodoro-display {
+    margin: 20px 0;
+}
+
+.pomodoro-time {
+    font-size: 3.5em;
+    font-weight: 700;
+    font-family: 'Courier New', monospace;
+    color: var(--accent-color, #ea5b0c);
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    display: block;
+}
+
+.pomodoro-controls {
+    margin: 20px 0;
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+}
+
+.btn-pomodoro {
+    padding: 10px 20px;
+    font-size: 1em;
+    font-weight: 600;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.btn-pomodoro:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.btn-pomodoro:active {
+    transform: translateY(0);
+}
+
+.btn-start {
+    background: var(--primary-color, #28a745);
+    color: white;
+}
+
+.btn-start:hover {
+    background: var(--primary-hover-color, #218838);
+}
+
+.btn-pause {
+    background: var(--warning-color, #ffc107);
+    color: #333;
+}
+
+.btn-pause:hover {
+    background: var(--warning-hover-color, #e0a800);
+}
+
+.btn-reset {
+    background: var(--secondary-color, #6c757d);
+    color: white;
+}
+
+.btn-reset:hover {
+    background: var(--secondary-hover-color, #5a6268);
+}
+
+.pomodoro-presets {
+    margin: 15px 0;
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+}
+
+.btn-preset {
+    padding: 8px 16px;
+    font-size: 0.9em;
+    background: var(--light-background, #f8f9fa);
+    border: 1px solid var(--main-border-color, #e0e0e0);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn-preset:hover {
+    background: var(--primary-color, #ea5b0c);
+    color: white;
+    border-color: var(--primary-color, #ea5b0c);
+}
+
+.pomodoro-sessions {
+    margin-top: 20px;
+    padding-top: 15px;
+    border-top: 1px solid var(--main-border-color, #e0e0e0);
+    font-size: 0.95em;
+    color: var(--secondary-text-color, #666);
+}
+
+.session-count {
+    color: var(--primary-color, #ea5b0c);
+    font-size: 1.2em;
+}
+
+/* Timer states */
+.pomodoro-widget.running .mode-label {
+    animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.7;
+    }
+}
+
+/* Responsive design */
+@media (max-width: 480px) {
+    .pomodoro-widget {
+        padding: 15px;
+    }
+    
+    .pomodoro-time {
+        font-size: 2.5em;
+    }
+    
+    .btn-pomodoro {
+        padding: 8px 16px;
+        font-size: 0.9em;
+    }
+    
+    .pomodoro-controls {
+        flex-wrap: wrap;
+    }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+    .pomodoro-widget {
+        background: var(--main-background-color-dark, #2b2b2b);
+        border-color: var(--main-border-color-dark, #444);
+    }
+    
+    .mode-label {
+        color: var(--main-text-color-dark, #e0e0e0);
+    }
+    
+    .pomodoro-time {
+        color: var(--accent-color-dark, #ff7b3d);
+    }
+    
+    .btn-preset {
+        background: var(--light-background-dark, #3a3a3a);
+        border-color: var(--main-border-color-dark, #555);
+        color: var(--main-text-color-dark, #e0e0e0);
+    }
+    
+    .pomodoro-sessions {
+        border-top-color: var(--main-border-color-dark, #444);
+        color: var(--secondary-text-color-dark, #aaa);
+    }
+}
+
+/* Integration with Leantime theme */
+.tw-dark .pomodoro-widget {
+    background: var(--tw-bg-gray-800);
+    border-color: var(--tw-border-gray-700);
+}
+
+.tw-dark .mode-label {
+    color: var(--tw-text-gray-100);
+}
+
+.tw-dark .pomodoro-time {
+    color: var(--tw-text-orange-500);
+}
+
+.tw-dark .btn-preset {
+    background: var(--tw-bg-gray-700);
+    border-color: var(--tw-border-gray-600);
+    color: var(--tw-text-gray-200);
+}
+
+.tw-dark .pomodoro-sessions {
+    border-top-color: var(--tw-border-gray-700);
+    color: var(--tw-text-gray-400);
+}

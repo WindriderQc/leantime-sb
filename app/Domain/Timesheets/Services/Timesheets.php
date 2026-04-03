@@ -2,6 +2,7 @@
 
 namespace Leantime\Domain\Timesheets\Services;
 
+use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Support\Facades\Log;
@@ -44,27 +45,39 @@ class Timesheets
     }
 
     /**
-     * @param  int  $ticketId
-     *
      * @api
      */
-    public function punchIn(int|string $ticketId): mixed
+    public function punchIn(int $ticketId): mixed
     {
-        $ticketId = (int) $ticketId;
-
         return $this->timesheetsRepo->punchIn($ticketId);
     }
 
     /**
-     * @param  int  $ticketId
+     * @api
+     */
+    public function punchOut(int $ticketId): float|false|int
+    {
+        return $this->timesheetsRepo->punchOut($ticketId);
+    }
+
+    /**
+     * Stop the active timer for the current user (no ticket ID required)
      *
      * @api
      */
-    public function punchOut(int|string $ticketId): float|false|int
+    public function stopActiveTimer(): float|false|int
     {
-        $ticketId = (int) $ticketId;
+        $userId = session('userdata.id');
+        if (! $userId) {
+            return false;
+        }
 
-        return $this->timesheetsRepo->punchOut($ticketId);
+        $clockedStatus = $this->timesheetsRepo->isClocked($userId);
+        if ($clockedStatus === false || ! isset($clockedStatus['id'])) {
+            return false;
+        }
+
+        return $this->timesheetsRepo->punchOut($clockedStatus['id']);
     }
 
     /**
@@ -99,8 +112,16 @@ class Timesheets
             throw new MissingParameterException('Ticket Id is a required field');
         }
 
-        if (! isset($params['date'])) {
-            throw new MissingParameterException('Date is a required field');
+        if (! empty($params['dateString'])) {
+            $values['date'] = dtHelper()->parseUserDateTime($params['dateString'], 'start')->formatDateTimeForDb();
+        } elseif (! empty($params['timestamp'])) {
+            $values['date'] = CarbonImmutable::createFromTimestamp($params['timestamp'], 'UTC')->format('Y-m-d H:i:s');
+        } elseif (! empty($params['date']) && empty($params['time'])) {
+            $values['date'] = dtHelper()->parseUserDateTime($params['date'], 'start')->formatDateTimeForDb();
+        } elseif (! empty($params['date'])) {
+            $values['date'] = dtHelper()->parseUserDateTime($params['date'], $params['time'])->formatDateTimeForDb();
+        } else {
+            throw new MissingParameterException('Date or timestamp is a required field');
         }
 
         if (! isset($params['hours'])) {
@@ -109,12 +130,6 @@ class Timesheets
 
         if (! isset($params['kind'])) {
             throw new MissingParameterException('Timesheet type is a required field');
-        }
-
-        if (empty($params['time'])) {
-            $values['date'] = dtHelper()->parseUserDateTime($params['date'], 'start')->formatDateTimeForDb();
-        } else {
-            $values['date'] = dtHelper()->parseUserDateTime($params['date'], $params['time'])->formatDateTimeForDb();
         }
 
         $values['hours'] = $params['hours'];
@@ -165,8 +180,9 @@ class Timesheets
             throw new MissingParameterException('Ticket Id is a required field');
         }
 
-        if (! isset($params['date'])) {
-            throw new MissingParameterException('Date is a required field');
+        // Either date, dateString or timestamp is required
+        if (! isset($params['date']) && empty($params['timestamp']) && empty($params['dateString'])) {
+            throw new MissingParameterException('Date or timestamp is a required field');
         }
 
         if (! isset($params['hours'])) {
@@ -177,10 +193,12 @@ class Timesheets
             throw new MissingParameterException('Timesheet type is a required field');
         }
 
-        if (empty($params['timestamp'])) {
-            $values['date'] = dtHelper()->parseUserDateTime($params['date'], 'start')->formatDateTimeForDb();
+        if (! empty($params['dateString'])) {
+            $values['date'] = dtHelper()->parseUserDateTime($params['dateString'], 'start')->formatDateTimeForDb();
+        } elseif (! empty($params['timestamp'])) {
+            $values['date'] = CarbonImmutable::createFromTimestamp($params['timestamp'], 'UTC')->format('Y-m-d H:i:s');
         } else {
-            $values['date'] = dtHelper()->timestamp($params['timestamp'])->formatDateTimeForDb();
+            $values['date'] = dtHelper()->parseUserDateTime($params['date'], 'start')->formatDateTimeForDb();
         }
 
         $values['hours'] = $params['hours'];
@@ -191,6 +209,18 @@ class Timesheets
         $this->timesheetsRepo->upsertTimesheetEntry($values);
 
         return true;
+    }
+
+    /**
+     * Delete a timesheet entry
+     *
+     * @param  int  $id  The ID of the timesheet entry to delete
+     *
+     * @api
+     */
+    public function deleteTime(int $id): void
+    {
+        $this->timesheetsRepo->deleteTime($id);
     }
 
     /**
@@ -221,14 +251,26 @@ class Timesheets
     }
 
     /**
+     * Get remaining hours for a ticket (planned hours minus logged hours)
+     *
+     * @param  int|Tickets  $ticketOrId  Ticket ID or Tickets object
      * @return int|mixed
      *
      * @api
      */
-    public function getRemainingHours(Tickets $ticket): mixed
+    public function getRemainingHours(int|Tickets $ticketOrId): mixed
     {
-        $totalHoursLogged = $this->getSumLoggedHoursForTicket($ticket->id);
-        $planHours = $ticket->planHours;
+        // Support both ticket ID (for API calls) and Tickets object (for internal use)
+        if ($ticketOrId instanceof Tickets) {
+            $ticketId = $ticketOrId->id;
+            $planHours = $ticketOrId->planHours;
+        } else {
+            $ticketId = $ticketOrId;
+            // Fetch plan hours from repository
+            $planHours = $this->timesheetsRepo->getTicketPlanHours($ticketId);
+        }
+
+        $totalHoursLogged = $this->getSumLoggedHoursForTicket($ticketId);
 
         $remaining = $planHours - $totalHoursLogged;
 

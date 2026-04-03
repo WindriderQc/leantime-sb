@@ -1,0 +1,34 @@
+FROM leantime/leantime:latest AS php-deps
+
+USER root
+WORKDIR /var/www/html
+
+RUN apk add --no-cache git
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+
+COPY --chown=www-data:www-data . /var/www/html
+
+RUN composer install --no-dev --optimize-autoloader --no-interaction
+
+FROM node:20-alpine AS asset-build
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . /app
+
+RUN npx mix --production && node generateBlocklist.mjs
+
+FROM leantime/leantime:latest
+
+USER root
+WORKDIR /var/www/html
+
+COPY --chown=www-data:www-data . /var/www/html
+COPY --from=php-deps --chown=www-data:www-data /var/www/html/vendor /var/www/html/vendor
+COPY --from=asset-build --chown=www-data:www-data /app/public/dist /var/www/html/public/dist
+COPY --from=asset-build --chown=www-data:www-data /app/blocklist.json /var/www/html/blocklist.json
+
+USER www-data

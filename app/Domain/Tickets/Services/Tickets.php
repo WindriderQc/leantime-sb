@@ -598,6 +598,7 @@ class Tickets
             $ticketGroups['all'] = [
                 'label' => 'all',
                 'id' => 'all',
+                'value' => '',
                 'class' => '',
                 'items' => $tickets,
             ];
@@ -605,14 +606,28 @@ class Tickets
             return $ticketGroups;
         }
 
+        // Special handling for due date grouping (computed buckets, not direct field values)
+        if ($searchCriteria['groupBy'] == 'dueDate') {
+            return $this->groupTicketsByDueDate($tickets);
+        }
+
+        // Resolve root parents so sub-tasks of sub-tasks group under the top-level parent
+        if ($searchCriteria['groupBy'] === 'dependingTicketId') {
+            $tickets = $this->resolveRootParents($tickets);
+        }
+
         $groupByOptions = $this->getGroupByFieldOptions();
 
         foreach ($tickets as $ticket) {
             $class = '';
             $moreInfo = '';
+            $groupColor = '';
+            $sortId = null; // Custom sort ID, defaults to groupedFieldValue if null
 
-            if (isset($ticket[$searchCriteria['groupBy']])) {
-                $groupedFieldValue = strtolower($ticket[$searchCriteria['groupBy']]);
+            if (isset($ticket[$searchCriteria['groupBy']])
+                || ($searchCriteria['groupBy'] === 'dependingTicketId' && array_key_exists('dependingTicketId', $ticket))
+            ) {
+                $groupedFieldValue = strtolower((string) ($ticket[$searchCriteria['groupBy']] ?? '0'));
 
                 if (isset($ticketGroups[$groupedFieldValue])) {
                     $ticketGroups[$groupedFieldValue]['items'][] = $ticket;
@@ -636,18 +651,28 @@ class Tickets
                                 $class = 'priority-text-'.$groupedFieldValue;
                             } else {
                                 $label = 'No Priority Set';
+                                $sortId = '999'; // Sort "No Priority" after Lowest (5)
                             }
                             break;
                         case 'storypoints':
                             $efforts = $this->getEffortLabels();
                             $label = $efforts[$groupedFieldValue] ?? 'No Effort Set';
+                            // For descending sort: subtract from 100 so higher values sort first
+                            // No effort (0 or empty) gets 999 to sort last
+                            if (empty($groupedFieldValue) || $groupedFieldValue == '0') {
+                                $sortId = '999';
+                            } else {
+                                $sortId = str_pad((string) (100 - (float) $groupedFieldValue), 6, '0', STR_PAD_LEFT);
+                            }
                             break;
                         case 'milestoneid':
                             $label = 'No Milestone Set';
+                            $sortId = 'zzz_no_milestone'; // Sort "No Milestone" last alphabetically
                             if ($ticket['milestoneid'] > 0) {
                                 $milestone = $this->getTicket($ticket['milestoneid']);
                                 $color = $milestone->tags;
-                                $class = '" style="color:'.$color.'"';
+                                $class = '';
+                                $groupColor = $color;
 
                                 try {
                                     $startDate = dtHelper()->parseDbDateTime($milestone->editFrom)->formatDateForUser();
@@ -663,9 +688,9 @@ class Tickets
 
                                 $statusLabels = $this->getStatusLabels($milestone->projectId);
                                 $status = $statusLabels[$milestone->status]['name'];
-                                $class = '" style="color:'.$color.'"';
                                 $moreInfo = $this->language->__('label.start').': '.$startDate.' • '.$this->language->__('label.end').': '.$endDate.' • '.$this->language->__('label.status_lowercase').': '.$status;
-                                $label = $ticket['milestoneHeadline']." <a href='#/tickets/editMilestone/".$ticket['milestoneid']."' style='float:right;'><i class='fa fa-edit'></i></a><a>";
+                                $label = $ticket['milestoneHeadline'];
+                                $sortId = 'a_'.preg_replace('/[^a-zA-Z0-9_-]/', '_', $ticket['milestoneHeadline']); // Named milestones sort first alphabetically
                             }
 
                             break;
@@ -687,6 +712,15 @@ class Tickets
                             $icon = $this->getTypeIcons();
                             $label = "<i class='fa ".($icon[strtolower($ticket['type'])] ?? '')."'></i>".$ticket['type'];
                             break;
+                        case 'dependingTicketId':
+                            if ($ticket['dependingTicketId'] > 0 && ! empty($ticket['parentHeadline'])) {
+                                $label = $ticket['parentHeadline'];
+                                $sortId = 'a_'.strtolower($ticket['parentHeadline']);
+                            } else {
+                                $label = $this->language->__('label.no_parent_task');
+                                $sortId = 'zzz_no_parent';
+                            }
+                            break;
                         default:
                             $label = $groupedFieldValue;
                             break;
@@ -695,28 +729,323 @@ class Tickets
                     $ticketGroups[$groupedFieldValue] = [
                         'label' => $label,
                         'more-info' => $moreInfo,
-                        'id' => strtolower($groupedFieldValue),
+                        'id' => $sortId ?? strtolower($groupedFieldValue),
+                        'value' => $groupedFieldValue,
                         'class' => $class,
+                        'color' => $groupColor,
                         'items' => [$ticket],
                     ];
                 }
             }
         }
 
-        // Sort main groups
-
+        // Sort main groups by appropriate field
         switch ($searchCriteria['groupBy']) {
             case 'status':
             case 'priority':
             case 'storypoints':
+            case 'milestoneid':
+            case 'dependingTicketId':
+                // Sort by ID for ordered fields (named milestones first, "No Milestone" last)
                 $ticketGroups = array_sort($ticketGroups, 'id');
-                // no break
+                break;
             default:
+                // Sort alphabetically by label for other groupings
                 $ticketGroups = array_sort($ticketGroups, 'label');
                 break;
         }
 
         return $ticketGroups;
+    }
+
+    /**
+     * Resolve root parents for each ticket by walking up the parent chain.
+     *
+     * Ensures sub-tasks of sub-tasks are grouped under the top-level parent
+     * rather than their immediate parent. For example, if C -> B -> A,
+     * both B and C will have their dependingTicketId set to A's id.
+     *
+     * @param  array<int, array<string, mixed>>  $tickets
+     * @return array<int, array<string, mixed>>
+     */
+    private function resolveRootParents(array $tickets): array
+    {
+        // Build a lookup map of ticket IDs to their parent and headline
+        $ticketMap = [];
+        foreach ($tickets as $ticket) {
+            $ticketMap[(int) $ticket['id']] = [
+                'dependingTicketId' => $ticket['dependingTicketId'] ?? null,
+                'headline' => $ticket['headline'] ?? '',
+            ];
+        }
+
+        foreach ($tickets as $key => $ticket) {
+            if (empty($ticket['dependingTicketId']) || $ticket['dependingTicketId'] <= 0) {
+                continue;
+            }
+
+            $currentId = (int) $ticket['dependingTicketId'];
+            $visited = [(int) $ticket['id']];
+
+            while (true) {
+                if (in_array($currentId, $visited)) {
+                    break; // Stop walking if we detect a circular reference
+                }
+                $visited[] = $currentId;
+
+                // Check if this parent also has a parent of its own
+                $parentInfo = null;
+                if (isset($ticketMap[$currentId])) {
+                    $parentInfo = $ticketMap[$currentId];
+                } else {
+                    $parentTicket = $this->getTicket($currentId);
+                    if ($parentTicket !== false) {
+                        $parentInfo = [
+                            'dependingTicketId' => $parentTicket->dependingTicketId,
+                            'headline' => $parentTicket->headline,
+                        ];
+                        $ticketMap[$currentId] = $parentInfo;
+                    }
+                }
+
+                if ($parentInfo && ! empty($parentInfo['dependingTicketId']) && (int) $parentInfo['dependingTicketId'] > 0) {
+                    $currentId = (int) $parentInfo['dependingTicketId'];
+
+                    continue;
+                }
+
+                // This ticket has no parent so it is the root
+                break;
+            }
+
+            // Point the ticket at the root parent instead of its immediate parent
+            if ($currentId !== (int) $ticket['dependingTicketId']) {
+                $tickets[$key]['dependingTicketId'] = $currentId;
+                $tickets[$key]['parentHeadline'] = $ticketMap[$currentId]['headline'] ?? '';
+            }
+        }
+
+        return $tickets;
+    }
+
+    /**
+     * Group tickets by due date into time-based buckets
+     *
+     * Buckets (in order):
+     * 1. Overdue - due_date < today
+     * 2. Due This Week - 0-6 days from today (includes today)
+     * 3. Due Next Week - 7-13 days from today
+     * 4. Due Later - 14+ days from today
+     * 5. No Due Date - null/empty due date
+     *
+     * @param  array  $tickets  Array of ticket data
+     * @return array Grouped tickets by due date bucket
+     */
+    private function groupTicketsByDueDate(array $tickets): array
+    {
+        // Define buckets in display order with sort IDs
+        $bucketDefinitions = [
+            'overdue' => [
+                'label' => 'Overdue',
+                'id' => '0',
+                'class' => '',
+            ],
+            'due-this-week' => [
+                'label' => 'Due This Week',
+                'id' => '1',
+                'class' => '',
+            ],
+            'due-next-week' => [
+                'label' => 'Due Next Week',
+                'id' => '2',
+                'class' => '',
+            ],
+            'due-later' => [
+                'label' => 'Due Later',
+                'id' => '3',
+                'class' => '',
+            ],
+            'no-due-date' => [
+                'label' => 'No Due Date',
+                'id' => '4',
+                'class' => '',
+            ],
+        ];
+
+        // Initialize all buckets with empty items (so empty buckets still display)
+        $ticketGroups = [];
+        foreach ($bucketDefinitions as $bucketKey => $bucketDef) {
+            $ticketGroups[$bucketKey] = [
+                'label' => $bucketDef['label'],
+                'id' => $bucketDef['id'],
+                'value' => $bucketKey,
+                'class' => $bucketDef['class'],
+                'more-info' => '',
+                'items' => [],
+            ];
+        }
+
+        // Get today's date at midnight in user's timezone
+        $today = CarbonImmutable::now()->startOfDay();
+
+        // Assign each ticket to appropriate bucket
+        foreach ($tickets as $ticket) {
+            $bucketKey = $this->getDueDateBucket($ticket['dateToFinish'] ?? null, $today);
+            $ticketGroups[$bucketKey]['items'][] = $ticket;
+        }
+
+        // Sort tickets within each bucket by due date (earliest first)
+        // For "No Due Date" bucket, sort by creation date (oldest first)
+        foreach ($ticketGroups as $bucketKey => &$group) {
+            if ($bucketKey === 'no-due-date') {
+                // Sort by creation date (oldest first)
+                usort($group['items'], function ($a, $b) {
+                    $dateA = $a['date'] ?? '';
+                    $dateB = $b['date'] ?? '';
+
+                    return strcmp($dateA, $dateB);
+                });
+            } else {
+                // Sort by due date (earliest first)
+                usort($group['items'], function ($a, $b) {
+                    $dateA = $a['dateToFinish'] ?? '';
+                    $dateB = $b['dateToFinish'] ?? '';
+
+                    return strcmp($dateA, $dateB);
+                });
+            }
+        }
+        unset($group);
+
+        return $ticketGroups;
+    }
+
+    /**
+     * Determine which due date bucket a ticket belongs to
+     *
+     * @param  string|null  $dateToFinish  The ticket's due date
+     * @param  CarbonImmutable  $today  Today's date at midnight
+     * @return string The bucket key
+     */
+    private function getDueDateBucket(?string $dateToFinish, CarbonImmutable $today): string
+    {
+        // Handle null/empty/invalid due dates
+        if (empty($dateToFinish) || str_starts_with($dateToFinish, '0000-00-00')) {
+            return 'no-due-date';
+        }
+
+        try {
+            $dueDate = CarbonImmutable::parse($dateToFinish)->startOfDay();
+        } catch (\Exception $e) {
+            return 'no-due-date';
+        }
+
+        $diffDays = $today->diffInDays($dueDate, false); // false = signed difference
+
+        if ($diffDays < 0) {
+            return 'overdue';
+        }
+        if ($diffDays <= 6) {
+            return 'due-this-week'; // 0-6 days (includes today)
+        }
+        if ($diffDays <= 13) {
+            return 'due-next-week'; // 7-13 days
+        }
+
+        return 'due-later'; // 14+ days
+    }
+
+    /**
+     * Get status breakdown counts for grouped tickets
+     *
+     * Calculates ticket counts per status column for each swimlane group.
+     * This is used to populate status breakdown visualizations like progress bars.
+     *
+     * @param  array  $groupedTickets  - Result from getAllGrouped()
+     * @param  array  $statusColumns  - Result from getKanbanColumns()
+     * @return array Status counts per swimlane with structure:
+     *               [
+     *               'groupId' => [
+     *               'statusCounts' => ['status_id' => count, ...],
+     *               'totalCount' => int,
+     *               'label' => string,
+     *               'id' => string,
+     *               'class' => string,
+     *               'moreInfo' => string
+     *               ]
+     *               ]
+     *
+     * @api
+     */
+    public function getStatusBreakdownBySwimlane(array $groupedTickets, array $statusColumns): array
+    {
+        $breakdown = [];
+
+        foreach ($groupedTickets as $groupId => $group) {
+            $statusCounts = [];
+            $totalCount = 0;
+
+            // Initialize all status columns to 0 (use string keys for consistency)
+            foreach ($statusColumns as $statusId => $statusLabel) {
+                $statusCounts[(string) $statusId] = 0;
+            }
+
+            // Count tickets by status and determine time alert
+            $hasOverdue = false;
+            $hasDueSoon = false;
+            $allStale = true;
+            $now = CarbonImmutable::now();
+
+            foreach ($group['items'] as $ticket) {
+                $status = (string) ($ticket['status'] ?? '');
+                if (isset($statusCounts[$status])) {
+                    $statusCounts[$status]++;
+                    $totalCount++;
+                }
+
+                // Time alert logic
+                // Check for overdue (highest priority)
+                if (isset($ticket['dateToFinish']) && ! empty($ticket['dateToFinish'])) {
+                    $dueDate = CarbonImmutable::parse($ticket['dateToFinish']);
+                    if ($dueDate->isPast()) {
+                        $hasOverdue = true;
+                    } elseif ($dueDate->diffInDays($now) <= 3) {
+                        $hasDueSoon = true;
+                    }
+                }
+
+                // Check for stale (no activity for 14+ days)
+                if (isset($ticket['editedDate']) && ! empty($ticket['editedDate'])) {
+                    $lastActivity = CarbonImmutable::parse($ticket['editedDate']);
+                    if ($lastActivity->diffInDays($now) < 14) {
+                        $allStale = false;
+                    }
+                }
+            }
+
+            // Determine which time alert to show (priority: overdue > dueSoon > stale)
+            $timeAlert = null;
+            if ($hasOverdue) {
+                $timeAlert = 'overdue';
+            } elseif ($hasDueSoon) {
+                $timeAlert = 'dueSoon';
+            } elseif ($allStale && $totalCount > 0) {
+                $timeAlert = 'stale';
+            }
+
+            // Use string version of group['id'] as key for consistent lookup in template
+            $breakdown[(string) $group['id']] = [
+                'statusCounts' => $statusCounts,
+                'totalCount' => $totalCount,
+                'label' => $group['label'],
+                'id' => $group['id'],
+                'class' => $group['class'] ?? '',
+                'moreInfo' => $group['more-info'] ?? '',
+                'timeAlert' => $timeAlert,
+            ];
+        }
+
+        return $breakdown;
     }
 
     /**
@@ -1509,6 +1838,7 @@ class Tickets
             ];
             $notification->entity = $values;
             $notification->module = 'tickets';
+            $notification->action = 'created';
             $notification->projectId = $values['projectId'] ?? session('currentProject') ?? -1;
             $notification->subject = $subject;
             $notification->authorId = session('userdata.id') ?? -1;
@@ -1669,6 +1999,7 @@ class Tickets
                 ];
                 $notification->entity = $values;
                 $notification->module = 'tickets';
+                $notification->action = 'created';
                 $notification->projectId = $values['projectId'] ?? session('currentProject') ?? -1;
                 $notification->subject = $subject;
                 $notification->authorId = session('userdata.id') ?? -1;
@@ -1778,6 +2109,7 @@ class Tickets
             ];
             $notification->entity = $values;
             $notification->module = 'tickets';
+            $notification->action = 'updated';
             $notification->projectId = $values['projectId'] ?? session('currentProject') ?? -1;
             $notification->subject = $subject;
             $notification->authorId = session('userdata.id') ?? -1;
@@ -1794,7 +2126,7 @@ class Tickets
     }
 
     /**
-     * Updates an existing task with the provided parameters.
+     * Adds a new ticket and optionally associates tags with it.
      *
      * @param  int  $id  The unique identifier of the task to be updated.
      * @param  array  $params  An associative array containing the updated task details.
@@ -1830,12 +2162,18 @@ class Tickets
      */
     public function patch($id, $params): bool
     {
-
-        // $params is an array of field names. Exclude id
-        if (is_array($params)) {
-            unset($params['id']);
-            unset($params['act']);
+        if (! is_array($params)) {
+            return false;
         }
+
+        // Strip non-ticket fields that may leak in from the framework or form submissions
+        unset(
+            $params['id'],
+            $params['act'],
+            $params['request_parts'],
+            $params['saveTicket'],
+            $params['saveAndCloseTicket'],
+        );
 
         $ticket = $this->getTicket($id);
 
@@ -1847,10 +2185,14 @@ class Tickets
 
         $return = $this->ticketRepository->patchTicket($id, $params);
 
+        if (! $return) {
+            return false;
+        }
+
         self::dispatchEvent('ticket_updated');
 
         // Todo: create events and move notification logic to notification module
-        if (isset($params['status']) && $return) {
+        if (isset($params['status'])) {
             $ticket = $this->getTicket($id);
             $subject = sprintf($this->language->__('email_notifications.todo_update_subject'), $id, strip_tags($ticket->headline));
             $actual_link = BASE_URL.'/dashboard/home#/tickets/showTicket/'.$id;
@@ -1863,6 +2205,7 @@ class Tickets
             ];
             $notification->entity = $ticket;
             $notification->module = 'tickets';
+            $notification->action = 'status_changed';
             $notification->projectId = $ticket->projectId ?? session('currentProject') ?? -1;
             $notification->subject = $subject;
             $notification->authorId = session('userdata.id');
@@ -1871,38 +2214,7 @@ class Tickets
             $this->projectService->notifyProjectUsers($notification);
         }
 
-        return $return;
-    }
-
-    /**
-     * moveTicket - Moves a ticket from one project to another. Milestone children will be moved as well
-     *
-     * @throws BindingResolutionException
-     *
-     * @api
-     */
-    public function moveTicket(int $id, int $projectId): bool
-    {
-
-        $ticket = $this->getTicket($id);
-
-        if ($ticket) {
-            // If milestone, move child todos
-            if ($ticket->type == 'milestone') {
-                $milestoneTickets = $this->getAll(['milestone' => $ticket->id]);
-                // Update child todos
-                foreach ($milestoneTickets as $childTicket) {
-                    $this->patch($childTicket['id'], ['projectId' => $projectId, 'sprint' => '']);
-                }
-            }
-
-            self::dispatchEvent('ticket_updated');
-
-            // Update ticket
-            return $this->patch($ticket->id, ['projectId' => $projectId, 'sprint' => '', 'dependingTicketId' => '', 'milestoneid' => '']);
-        }
-
-        return false;
+        return (bool) $return;
     }
 
     /**
@@ -2005,23 +2317,103 @@ class Tickets
     }
 
     /**
-     * @return false|void
+     * Update ticket sorting with hierarchical cascade for milestone children
+     *
+     * When milestones are reordered, this method ensures all child tasks
+     * maintain their hierarchical relationship with their parent milestone.
+     * Uses a hierarchical sortindex scheme where:
+     * - Milestones: position * 100 (100, 200, 300, ...)
+     * - Tasks under milestone: milestoneSort + offset (101, 102, 103, ...)
+     *
+     * @param  array  $params  Array of ticketId => sortPosition from Gantt drag-drop
+     * @return bool True on success, false on failure
      *
      * @api
      */
-    public function updateTicketSorting($params)
+    public function updateTicketSorting($params): bool
     {
+        if (empty($params)) {
+            return true;
+        }
 
-        // ticketId: sortIndex
-        foreach ($params as $id => $sortKey) {
-            if ($this->ticketRepository->patchTicket($id, ['sortIndex' => $sortKey]) === false) {
-                return false;
+        $allUpdates = [];
+
+        // Fetch all tickets to determine types and relationships
+        $ticketIds = array_keys($params);
+        $tickets = [];
+
+        foreach ($ticketIds as $ticketId) {
+            $ticket = $this->getTicket($ticketId);
+            if ($ticket) {
+                $tickets[$ticketId] = [
+                    'id' => $ticket->id,
+                    'type' => $ticket->type,
+                    'milestoneid' => $ticket->milestoneid,
+                    'projectId' => $ticket->projectId,
+                ];
             }
         }
 
-        self::dispatchEvent('ticket_updated');
+        // Separate TOP-LEVEL milestones from other tickets
+        // Top-level milestones have no milestoneid (or milestoneid = 0/null)
+        $topLevelMilestones = [];
+        $otherTickets = [];
 
-        return true;
+        foreach ($tickets as $ticketId => $ticket) {
+            if ($ticket['type'] === 'milestone' && empty($ticket['milestoneid'])) {
+                $topLevelMilestones[$ticketId] = $ticket;
+            } else {
+                $otherTickets[$ticketId] = $ticket;
+            }
+        }
+
+        // Process top-level milestones with hierarchical structure
+        foreach ($topLevelMilestones as $ticketId => $milestone) {
+            $position = $params[$ticketId];
+
+            // Calculate base sortindex for milestone (position * 100)
+            $baseSortIndex = $position * 100;
+            $allUpdates[$ticketId] = $baseSortIndex;
+
+            // Get all children for this milestone
+            $children = $this->getTicketChildren($ticketId, $milestone['projectId']);
+
+            if (! empty($children)) {
+                // Calculate hierarchical sortindex for all descendants
+                $childOffset = 1;
+                $childUpdates = $this->calculateHierarchicalSortIndex($children, $baseSortIndex, $childOffset);
+                // array_merge reindexes numeric keys, use + to preserve keys
+                foreach ($childUpdates as $childId => $childSort) {
+                    $allUpdates[$childId] = $childSort;
+                }
+            }
+        }
+
+        // Process other tickets (non-top-level-milestones that were dragged)
+        // This includes sub-milestones and regular tasks
+        foreach ($otherTickets as $ticketId => $ticket) {
+            $position = $params[$ticketId];
+
+            // If this ticket belongs to a top-level milestone that was also updated,
+            // skip it (already handled above with hierarchical sorting)
+            if (! empty($ticket['milestoneid']) && isset($topLevelMilestones[$ticket['milestoneid']])) {
+                continue;
+            }
+
+            // For orphan tickets or tickets whose parent wasn't moved,
+            // assign sortindex based on position
+            // Use position * 100 to maintain spacing
+            $allUpdates[$ticketId] = $position * 100;
+        }
+
+        // Bulk update all sortindex values in a single transaction
+        $result = $this->ticketRepository->bulkUpdateSortIndex($allUpdates);
+
+        if ($result) {
+            self::dispatchEvent('ticket_updated');
+        }
+
+        return $result;
     }
 
     /**
@@ -2070,6 +2462,7 @@ class Tickets
                 ];
                 $notification->entity = $ticket;
                 $notification->module = 'tickets';
+                $notification->action = 'status_changed';
                 $notification->projectId = $ticket->projectId ?? session('currentProject') ?? -1;
                 $notification->subject = $subject;
                 $notification->authorId = session('userdata.id') ?? -1;
@@ -2213,27 +2606,19 @@ class Tickets
      */
     public function getGroupByFieldOptions(): array
     {
+        // Alphabetically ordered (except "No Grouping" stays first as default)
         return [
             'all' => [
                 'id' => 'all',
                 'field' => 'all',
                 'class' => '',
                 'label' => 'no_group',
-
             ],
-            'type' => [
-                'id' => 'type',
-                'field' => 'type',
-                'label' => 'type',
+            'dueDate' => [
+                'id' => 'dueDate',
+                'field' => 'dueDate',
                 'class' => '',
-                'function' => 'getTicketTypes',
-            ],
-            'status' => [
-                'id' => 'status',
-                'field' => 'status',
-                'label' => 'todo_status',
-                'class' => '',
-                'function' => 'getStatusLabels',
+                'label' => 'due_date',
             ],
             'effort' => [
                 'id' => 'effort',
@@ -2242,6 +2627,19 @@ class Tickets
                 'class' => '',
                 'function' => 'getEffortLabels',
             ],
+            'milestone' => [
+                'id' => 'milestone',
+                'field' => 'milestoneid',
+                'label' => 'milestone',
+                'class' => '',
+                'function' => null,
+            ],
+            'parentTask' => [
+                'id' => 'parentTask',
+                'field' => 'dependingTicketId',
+                'label' => 'parent_task',
+                'class' => '',
+            ],
             'priority' => [
                 'id' => 'priority',
                 'field' => 'priority',
@@ -2249,12 +2647,25 @@ class Tickets
                 'class' => '',
                 'function' => 'getPriorityLabels',
             ],
-            'milestone' => [
-                'id' => 'milestone',
-                'field' => 'milestoneid',
-                'label' => 'milestone',
+            'sprint' => [
+                'id' => 'sprint',
+                'field' => 'sprint',
                 'class' => '',
-                'function' => null,
+                'label' => 'sprint',
+            ],
+            'status' => [
+                'id' => 'status',
+                'field' => 'status',
+                'label' => 'todo_status',
+                'class' => '',
+                'function' => 'getStatusLabels',
+            ],
+            'type' => [
+                'id' => 'type',
+                'field' => 'type',
+                'label' => 'type',
+                'class' => '',
+                'function' => 'getTicketTypes',
             ],
             'user' => [
                 'id' => 'user',
@@ -2263,21 +2674,6 @@ class Tickets
                 'class' => '',
                 'funtion' => 'buildEditorName',
             ],
-            'sprint' => [
-                'id' => 'sprint',
-                'field' => 'sprint',
-                'class' => '',
-                'label' => 'sprint',
-            ],
-
-            /*
-            "tags" => [
-                'id' => 'groupByTagsLink',
-                'field' => 'tags',
-                'label' => 'tags',
-            ],* @api
-*
-*/
         ];
     }
 
@@ -2908,6 +3304,87 @@ class Tickets
     }
 
     /**
+     * Get all children (tasks and subtasks) for a given ticket recursively
+     *
+     * @param  int  $ticketId  The parent ticket ID
+     * @param  int|null  $projectId  The project ID
+     * @return array Array of all descendants with nested structure
+     */
+    private function getTicketChildren(int $ticketId, ?int $projectId = null): array
+    {
+        $children = [];
+
+        // Get direct children (tasks under milestone or subtasks under task)
+        $directChildren = $this->ticketRepository->getSubtasksByParent($ticketId);
+
+        // If this is a milestone, also get tasks assigned to it
+        $tasksInMilestone = $this->ticketRepository->getTasksByMilestone($ticketId, $projectId);
+
+        // Merge both lists
+        $allChildren = array_merge($directChildren, $tasksInMilestone);
+
+        // Remove duplicates (in case a task is both a subtask and assigned to milestone)
+        $uniqueChildren = [];
+        foreach ($allChildren as $child) {
+            if (! isset($uniqueChildren[$child['id']])) {
+                $uniqueChildren[$child['id']] = $child;
+            }
+        }
+
+        // Recursively get children for each child
+        foreach ($uniqueChildren as $child) {
+            $child['children'] = $this->getTicketChildren($child['id'], $projectId);
+            $children[] = $child;
+        }
+
+        return $children;
+    }
+
+    /**
+     * Calculate hierarchical sortindex values for a tree of tickets
+     *
+     * @param  array  $tickets  Array of tickets to assign sortindex
+     * @param  int  $baseIndex  The base sortindex (e.g., 100 for first milestone)
+     * @param  int  $offset  Current offset within the base (starts at 1)
+     * @return array Array of ['ticketId' => sortindex]
+     */
+    private function calculateHierarchicalSortIndex(array $tickets, int $baseIndex, int &$offset = 1): array
+    {
+        $updates = [];
+
+        foreach ($tickets as $ticket) {
+            $ticketId = $ticket['id'];
+
+            // Check if we've exceeded the 99-slot limit per parent
+            if ($offset > 99) {
+                Log::warning("Ticket hierarchy exceeds 99 children for base index {$baseIndex}. Ticket {$ticketId} will use overflow slot.");
+            }
+
+            // Assign sortindex: baseIndex + offset
+            $sortIndex = $baseIndex + $offset;
+            $updates[$ticketId] = $sortIndex;
+
+            // Recursively handle children if present
+            if (! empty($ticket['children'])) {
+                $childOffset = 1;
+                $childUpdates = $this->calculateHierarchicalSortIndex(
+                    $ticket['children'],
+                    $sortIndex,
+                    $childOffset
+                );
+                $updates = array_merge($updates, $childUpdates);
+
+                // Update offset to account for all children
+                $offset += $childOffset;
+            } else {
+                $offset++;
+            }
+        }
+
+        return $updates;
+    }
+
+    /**
      * Prepare ticket dates for database.
      *
      * @param  array  $values  The values of the ticket fields.
@@ -2939,6 +3416,7 @@ class Tickets
                 }
             } catch (\Exception $e) {
                 $values['dateToFinish'] = '';
+                unset($values['timeToFinish']);
             }
         }
 
@@ -2964,6 +3442,7 @@ class Tickets
                 }
             } catch (\Exception $e) {
                 $values['editFrom'] = '';
+                unset($values['timeFrom']);
             }
         }
 
@@ -2990,6 +3469,7 @@ class Tickets
 
             } catch (\Exception $e) {
                 $values['editTo'] = '';
+                unset($values['timeTo']);
             }
 
         }

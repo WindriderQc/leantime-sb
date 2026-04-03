@@ -2,70 +2,54 @@
 
 namespace Leantime\Domain\Reactions\Repositories;
 
+use Illuminate\Database\ConnectionInterface;
+use Leantime\Core\Db\DatabaseHelper;
 use Leantime\Core\Db\Db as DbCore;
-use PDO;
 
+/**
+ * Repository for managing user reactions on entities.
+ */
 class Reactions
 {
-    /**
-     * @var DbCore db object
-     */
-    private DbCore $db;
+    private ConnectionInterface $db;
 
-    public function __construct(DbCore $db)
+    private DatabaseHelper $dbHelper;
+
+    public function __construct(DbCore $db, DatabaseHelper $dbHelper)
     {
-        $this->db = $db;
+        $this->db = $db->getConnection();
+        $this->dbHelper = $dbHelper;
     }
 
     /**
-     * addReaction - adds a reaction to an entity
+     * Add a reaction to an entity.
      */
     public function addReaction(int $userId, string $module, int $moduleId, string $reaction): bool
     {
-
-        $sql = 'INSERT INTO zp_reactions
-                        (module,moduleId,userId,reaction,date)
-                    VALUES
-                        (:module,:moduleId,:userId,:reaction,:date)';
-
-        $stmn = $this->db->database->prepare($sql);
-        $stmn->bindValue(':module', $module, PDO::PARAM_STR);
-        $stmn->bindValue(':moduleId', $moduleId, PDO::PARAM_INT);
-        $stmn->bindValue(':userId', $userId, PDO::PARAM_INT);
-        $stmn->bindValue(':reaction', $reaction, PDO::PARAM_STR);
-        $stmn->bindValue(':date', date('Y-m-d H:i:s'), PDO::PARAM_STR);
-
-        $return = $stmn->execute();
-        $stmn->closeCursor();
-
-        return $return;
+        return $this->db->table('zp_reactions')->insert([
+            'module' => $module,
+            'moduleId' => $moduleId,
+            'userId' => $userId,
+            'reaction' => $reaction,
+            'date' => dtHelper()->userNow()->formatDateTimeForDb(),
+        ]);
     }
 
     /**
      * getGroupedEntityReactions - gets all reactions for a given entity grouped and counted by reactions
      *
-     *
      * @return array|bool returns the array on success or false on failure
      */
     public function getGroupedEntityReactions(string $module, int $moduleId): array|false
     {
+        $results = $this->db->table('zp_reactions')
+            ->selectRaw('COUNT(reaction) AS '.$this->dbHelper->wrapColumn('reactionCount').', reaction')
+            ->where('module', $module)
+            ->where('moduleId', $moduleId)
+            ->groupBy('reaction')
+            ->get();
 
-        $sql = 'SELECT
-                        COUNT(reaction) AS reactionCount,
-                        reaction
-                         FROM zp_reactions
-					WHERE module=:module AND moduleId=:moduleId
-					GROUP BY reaction';
-
-        $stmn = $this->db->database->prepare($sql);
-        $stmn->bindValue(':module', $module, PDO::PARAM_STR);
-        $stmn->bindValue(':moduleId', $moduleId, PDO::PARAM_STR);
-
-        $stmn->execute();
-        $values = $stmn->fetchAll();
-        $stmn->closeCursor();
-
-        return $values;
+        return array_map(fn ($item) => (array) $item, $results->toArray());
     }
 
     /**
@@ -73,48 +57,23 @@ class Reactions
      */
     public function getUserReactions(int $userId, string $module = '', ?int $moduleId = null, string $reaction = ''): array|false
     {
+        $query = $this->db->table('zp_reactions')
+            ->select('id', 'reaction', 'date', 'module', 'moduleId', 'userId')
+            ->where('userId', $userId);
 
-        $sql = 'SELECT
-                        id,
-                        reaction,
-                        date,
-                        module,
-                        moduleId,
-                        reaction,
-                        userId
-                    FROM zp_reactions
-					WHERE
-					    userId = :userId
-					';
-
-        if ($module != '') {
-            $sql .= ' AND module=:module';
+        if ($module !== '') {
+            $query->where('module', $module);
         }
-        if ($moduleId != null) {
-            $sql .= ' AND moduleId=:moduleId';
+        if ($moduleId !== null) {
+            $query->where('moduleId', $moduleId);
         }
-        if ($reaction != '') {
-            $sql .= ' AND reaction = :reaction';
+        if ($reaction !== '') {
+            $query->where('reaction', $reaction);
         }
 
-        $stmn = $this->db->database->prepare($sql);
-        $stmn->bindValue(':userId', $userId, PDO::PARAM_STR);
+        $results = $query->get();
 
-        if ($module != '') {
-            $stmn->bindValue(':module', $module, PDO::PARAM_STR);
-        }
-        if ($moduleId != '') {
-            $stmn->bindValue(':moduleId', $moduleId, PDO::PARAM_STR);
-        }
-        if ($reaction != '') {
-            $stmn->bindValue(':reaction', $reaction, PDO::PARAM_STR);
-        }
-
-        $stmn->execute();
-        $values = $stmn->fetchAll();
-        $stmn->closeCursor();
-
-        return $values;
+        return array_map(fn ($item) => (array) $item, $results->toArray());
     }
 
     /**
@@ -122,16 +81,10 @@ class Reactions
      */
     public function removeReactionById(int $id): bool
     {
-
-        $sql = 'DELETE FROM zp_reactions WHERE id = :id LIMIT 1';
-
-        $stmn = $this->db->database->prepare($sql);
-        $stmn->bindValue(':id', $id, PDO::PARAM_INT);
-
-        $return = $stmn->execute();
-        $stmn->closeCursor();
-
-        return $return;
+        return $this->db->table('zp_reactions')
+            ->where('id', $id)
+            ->limit(1)
+            ->delete() > 0;
     }
 
     /**
@@ -139,52 +92,66 @@ class Reactions
      */
     public function removeUserReaction(int $userId, string $module, int $moduleId, string $reaction): bool
     {
-
-        $sql = 'DELETE FROM zp_reactions WHERE
-                             module = :module
-                         AND moduleId = :moduleId
-                          AND userId = :userId
-                          AND reaction = :reaction
-                         LIMIT 1';
-
-        $stmn = $this->db->database->prepare($sql);
-        $stmn->bindValue(':module', $module, PDO::PARAM_STR);
-        $stmn->bindValue(':moduleId', $moduleId, PDO::PARAM_INT);
-        $stmn->bindValue(':userId', $userId, PDO::PARAM_INT);
-        $stmn->bindValue(':reaction', $reaction, PDO::PARAM_STR);
-
-        $return = $stmn->execute();
-        $stmn->closeCursor();
-
-        return $return;
+        return $this->db->table('zp_reactions')
+            ->where('module', $module)
+            ->where('moduleId', $moduleId)
+            ->where('userId', $userId)
+            ->where('reaction', $reaction)
+            ->limit(1)
+            ->delete() > 0;
     }
 
+    /**
+     * getReactionsByModule - gets reactions count by module
+     */
     public function getReactionsByModule(string $module, ?int $moduleId = null): array|false
     {
-        $sql = 'SELECT
-                        reaction,
-                        Count(reaction) as reactionCount
+        $query = $this->db->table('zp_reactions')
+            ->selectRaw('reaction, COUNT(reaction) as '.$this->dbHelper->wrapColumn('reactionCount'))
+            ->where('module', $module);
 
-                    FROM zp_reactions
-                    WHERE module=:module';
-
-        if ($moduleId != null) {
-            $sql .= ' AND moduleId=:moduleId';
+        if ($moduleId !== null) {
+            $query->where('moduleId', $moduleId);
         }
 
-        $sql .= ' GROUP BY reaction collate utf8mb4_bin;';
+        $results = $query->groupBy('reaction')
+            ->get();
 
-        $stmn = $this->db->database->prepare($sql);
-        $stmn->bindValue(':module', $module, PDO::PARAM_STR);
+        return array_map(fn ($item) => (array) $item, $results->toArray());
+    }
 
-        if ($moduleId != null) {
-            $stmn->bindValue(':moduleId', $moduleId, PDO::PARAM_INT);
+    /**
+     * getEntityReactionsWithUsers - gets all reactions for an entity with user names
+     *
+     * @return array returns array grouped by reaction with user names
+     */
+    public function getEntityReactionsWithUsers(string $module, int $moduleId): array
+    {
+        $results = $this->db->table('zp_reactions')
+            ->select('zp_reactions.reaction', 'zp_reactions.userId', 'zp_user.firstname', 'zp_user.lastname')
+            ->leftJoin('zp_user', 'zp_reactions.userId', '=', 'zp_user.id')
+            ->where('zp_reactions.module', $module)
+            ->where('zp_reactions.moduleId', $moduleId)
+            ->get();
+
+        // Group by reaction and collect user names
+        $grouped = [];
+        foreach ($results as $row) {
+            $reaction = $row->reaction;
+            if (! isset($grouped[$reaction])) {
+                $grouped[$reaction] = [
+                    'reaction' => $reaction,
+                    'reactionCount' => 0,
+                    'users' => [],
+                ];
+            }
+            $grouped[$reaction]['reactionCount']++;
+            $grouped[$reaction]['users'][] = [
+                'userId' => $row->userId,
+                'name' => trim(($row->firstname ?? '').' '.($row->lastname ?? '')),
+            ];
         }
 
-        $return = $stmn->execute();
-        $values = $stmn->fetchAll();
-        $stmn->closeCursor();
-
-        return $values;
+        return array_values($grouped);
     }
 }
